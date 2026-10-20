@@ -1,0 +1,1768 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Virus Escape</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bungee&display=swap" crossorigin="anonymous">
+<style>
+  /* Layout: full-window 3D canvas, stats strip top-centre, minimap bottom-right, centred card for title / caught / escaped */
+  :root{
+    --bg:#2a0a14; --ink:#1a0610; --card:rgba(30,8,18,.86); --text:#ffe9ef; --dim:#d7a3b3;
+    --virus:#8be04e; --danger:#ff3b5c; --exit:#ff5a6e;
+    --title:'Bungee', Verdana, sans-serif; --body:Verdana, Tahoma, sans-serif;
+  }
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:var(--body)}
+  canvas#c{position:fixed;inset:0;width:100%;height:100%;display:block;touch-action:none}
+
+  #home{position:fixed;top:calc(10px + env(safe-area-inset-top,0px));left:calc(10px + env(safe-area-inset-left,0px));z-index:50;
+    width:44px;height:44px;border-radius:50%;display:grid;place-items:center;color:#2a2140;background:rgba(255,255,255,.82);
+    box-shadow:0 3px 0 rgba(0,0,0,.18);touch-action:manipulation;-webkit-tap-highlight-color:transparent;text-decoration:none}
+  #home svg{width:24px;height:24px}
+  #home:active{transform:translateY(2px);box-shadow:0 1px 0 rgba(0,0,0,.18)}
+
+  #hud{position:fixed;top:12px;left:50%;transform:translateX(-50%);display:flex;gap:18px;padding:8px 18px;border-radius:999px;
+    background:var(--card);font-size:15px;white-space:nowrap;z-index:10;pointer-events:none}
+  #hud b{color:#fff}
+  #toast{position:fixed;top:62px;left:50%;transform:translateX(-50%);font-family:var(--title);font-size:18px;color:var(--danger);
+    text-shadow:0 2px 0 var(--ink);opacity:0;transition:opacity .3s;pointer-events:none;z-index:10}
+  #toast.on{opacity:1}
+  #help{position:fixed;left:14px;bottom:12px;font-size:12px;color:var(--dim);pointer-events:none;z-index:10}
+  #minimap{position:fixed;right:14px;bottom:14px;width:186px;height:186px;border-radius:10px;background:rgba(0,0,0,.45);
+    image-rendering:pixelated;z-index:10}
+  #vignette{position:fixed;inset:0;pointer-events:none;z-index:4;
+    background:radial-gradient(ellipse at 50% 55%, transparent 55%, rgba(20,0,8,.6) 100%)}
+  #danger{position:fixed;inset:0;pointer-events:none;opacity:0;z-index:5;
+    box-shadow:inset 0 0 120px 30px var(--danger)}
+
+  #overlay{position:fixed;inset:0;display:grid;place-items:center;background:rgba(20,4,10,.45);z-index:20}
+  #overlay.hidden{display:none}
+  #card{max-width:460px;margin:16px;padding:26px 30px;border-radius:18px;background:var(--card);text-align:center;
+    box-shadow:0 10px 40px rgba(0,0,0,.5)}
+  #card h1{margin:0 0 10px;font-family:var(--title);font-weight:400;font-size:34px;color:var(--virus);text-shadow:0 3px 0 var(--ink)}
+  #card h1.bad{color:var(--danger)}
+  #card p{margin:8px 0;line-height:1.5}
+  #card .credit{margin-top:14px;font-size:11px;color:var(--dim)}
+  #card .key{display:inline-block;margin-top:10px;padding:6px 14px;border-radius:8px;background:#fff;color:var(--ink);font-weight:bold}
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<a id="home" href="../index.html" aria-label="All games" title="All games"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 11 12 4l8.5 7" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 9.8V20h12V9.8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/><path d="M10 20v-5.5h4V20" fill="currentColor"/></svg></a>
+<div id="vignette"></div>
+<div id="danger"></div>
+<div id="hud">
+  <span>Level <b id="hLevel">1</b></span>
+  <span>⏱ <b id="hTime">0:00</b></span>
+  <span>🦷 <b id="hEaten">0</b> eaten</span>
+  <span>🛡 <b id="hAb">0</b> antibodies</span>
+  <span id="hWave" title="Antibodies arrive at your entry wound in">🚨 <b id="hWaveT">0:00</b></span>
+  <span id="hPower" hidden></span>
+</div>
+<div id="toast"></div>
+<div id="help">Arrows / WASD: move · hold against tissue to chew · R: restart level · M: sound on/off</div>
+<canvas id="minimap" width="186" height="186"></canvas>
+<div id="overlay"><div id="card"></div></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+/* ======== tuning ======== */
+const GRID = 31;                 // the level is GRID x GRID cells
+const VIRUS_SPEED = 5;           // cells per second through open space
+const CHEW_TIME = { 1: 0.4, 2: 1.0, 4: 0.2 };   // seconds to chew soft (1), dense (2) and fat (4) tissue
+const AB_SPEED = 2.1;            // antibody cells per second on level 1
+const AB_SPEED_PER_LEVEL = 0.15; // added each level
+const AB_WANDER_FACTOR = 0.5;    // antibodies that can't sense the virus drift at this fraction of speed
+const FIRST_WAVE_FRACTION = 0.5; // the first antibodies come in through your entry wound after this share of the
+                                 // fastest possible escape time (the quickest route, chewing included)
+const FIRST_WAVE_MIN = 10;       // ...but never sooner than this many seconds
+const START_SOFT_RADIUS = 4;     // dense tissue and membranes this close to the entry wound become soft tissue
+const WAVE_EVERY = 12;           // seconds between later arrivals
+const TAP_BUFFER = 0.3;          // seconds a tapped direction is remembered until the next cell centre
+const FAT_BLOBS = 3;             // fat pockets to hide in (+1 every second level)
+const PICKUPS_IN_TISSUE = 5;     // power-ups sealed in little cavities
+const PICKUPS_IN_VESSELS = 2;    // power-ups lying in the vessels, near the patrols
+const ENZYME_CHEW = 0.3;         // chew time multiplier while Enzyme is active
+const ATP_SPEED = 1.7;           // move speed multiplier while ATP is active
+const ACID_SLOW = 0.45;          // move speed multiplier while wading through acid
+const PATROLS = 2;               // antibodies already patrolling the vessels (+1 per level)
+const MAX_ANTIBODIES = 10;
+const CATCH_DIST = 0.55;         // cells
+const VESSELS = 4;               // open blood vessels carved through the tissue
+const MEMBRANES = 2;             // unchewable walls with gaps (+1 per level, up to 5)
+const DENSE_THRESHOLD = 0.58;    // higher = less dense tissue
+
+/* ======== grid ======== */
+const OPEN = 0, SOFT = 1, DENSE = 2, WALL = 3, FAT = 4;
+const N = GRID * GRID;
+const type = new Uint8Array(N);
+const chew = new Float32Array(N);       // 0..1 chew progress per cell
+const height = new Float32Array(N);     // tissue block height
+const vessel = new Uint8Array(N);       // 1 = blood vessel floor
+const eaten = new Uint8Array(N);        // 1 = chewed by the virus
+const fat = new Uint8Array(N);          // 1 = fat pocket: the virus is hidden while inside
+const acid = new Uint8Array(N);         // 1 = acid pool (the Gut): open, but the virus wades through slowly
+const pickupAt = new Map();             // cell index -> power-up
+const dist = new Int32Array(N);         // BFS steps from the virus over open cells, -1 = no route
+const bfsQueue = new Int32Array(N);
+const idx = (x, z) => z * GRID + x;
+const inside = (x, z) => x >= 0 && z >= 0 && x < GRID && z < GRID;
+const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+const rand = (a, b) => a + Math.random() * (b - a);
+const randi = (a, b) => Math.floor(rand(a, b + 1));
+const lerp = (a, b, t) => a + (b - a) * t;
+
+let start, exit;   // {x,z}
+let spawnCell;     // where trailing antibodies come in
+
+function makeNoise(cell) {
+  const w = Math.ceil(GRID / cell) + 2;
+  const g = Array.from({ length: w * w }, Math.random);
+  const s = t => t * t * (3 - 2 * t);
+  return (x, z) => {
+    const fx = x / cell, fz = z / cell, ix = Math.floor(fx), iz = Math.floor(fz);
+    const tx = s(fx - ix), tz = s(fz - iz);
+    const a = g[iz * w + ix], b = g[iz * w + ix + 1], c = g[(iz + 1) * w + ix], d = g[(iz + 1) * w + ix + 1];
+    return lerp(lerp(a, b, tx), lerp(c, d, tx), tz);
+  };
+}
+
+/* ======== organs: every level is a different part of the body ========
+   Each theme sets the colours, the shape of the tissue cells, how the level is laid out and one special feature.
+   After the sixth they repeat, with the usual per-level difficulty on top. */
+const THEMES = [
+  { key: 'muscle', name: 'The Muscle', icon: '💪', blurb: 'Springy pink muscle with blood vessels running through it.',
+    layout: 'muscle', shape: 'box', nucleus: true, beat: 1,
+    bg: 0x2a0a14, sky: 0xffd6e0, ground: 0x3a0c1c, soft: 0xe98a9c, dense: 0xa8455e, wall: 0x6d5a8a, fat: 0xf3d98a,
+    nucleusCol: 0x8a2a6a, floor: 0x4a1a2a, lane: 0xa01a34, motes: 0xffb0c4 },
+  { key: 'lungs', name: 'The Lungs', icon: '🫁', blurb: 'Big airy alveoli to dash through, but guards patrol every one.',
+    layout: 'alveoli', shape: 'blob', nucleus: false, beat: 0.6, moteSize: 0.2,
+    bg: 0x1c1430, sky: 0xe8f0ff, ground: 0x40283c, soft: 0xf4b8c8, dense: 0xd889a8, wall: 0x8a7ab0, fat: 0xfff0b0,
+    floor: 0x5a3048, lane: 0xc86a90, motes: 0xdff0ff },
+  { key: 'gut', name: 'The Gut', icon: '🍲', blurb: 'Wobbly villi and pools of stomach acid. Acid slows you down, but the guards wade right through.',
+    layout: 'villi', shape: 'villus', nucleus: false, beat: 0.5, acid: true,
+    bg: 0x1a1606, sky: 0xfff0c8, ground: 0x3a2a10, soft: 0xeaa478, dense: 0xc0704a, wall: 0x7a5a3a, fat: 0xf8e090,
+    floor: 0x3a2412, lane: 0xa04a20, motes: 0xd8ff80 },
+  { key: 'brain', name: 'The Brain', icon: '🧠', blurb: 'Folded grey matter crackling with nerve signals.',
+    layout: 'folds', shape: 'fold', nucleus: false, beat: 0.4, sparks: true,
+    bg: 0x0c0a22, sky: 0xc8d0ff, ground: 0x201040, soft: 0xd8b8c8, dense: 0x9a8098, wall: 0x4a3a8a, fat: 0xf0e0b0,
+    floor: 0x24183a, lane: 0x6a3aa0, motes: 0x9ad0ff },
+  { key: 'bone', name: 'The Bone', icon: '🦴', blurb: 'A hard bone honeycomb. Soft red marrow is quick to chew; the bone is not.',
+    layout: 'marrow', shape: 'hex', nucleus: false, beat: 0.5,
+    bg: 0x1a1612, sky: 0xfff8e8, ground: 0x302418, soft: 0xc84a4a, dense: 0xe8dcc0, wall: 0xa89878, fat: 0xf8e8a0,
+    floor: 0x3a2a20, lane: 0x9a2a2a, motes: 0xfff0d8 },
+  { key: 'heart', name: 'The Heart', icon: '❤️', blurb: 'Rings of thumping heart muscle around a great big chamber.',
+    layout: 'rings', shape: 'fiber', nucleus: true, beat: 2.2,
+    bg: 0x300408, sky: 0xffc8c8, ground: 0x400810, soft: 0xd84a5a, dense: 0x9a1a30, wall: 0x5a1a3a, fat: 0xf3d98a,
+    nucleusCol: 0x5a0a2a, floor: 0x3a0810, lane: 0xc01020, motes: 0xff8090 },
+];
+let theme = THEMES[0];
+const themeFor = level => THEMES[(level - 1) % THEMES.length];
+
+const interior = (x, z) => x > 0 && z > 0 && x < GRID - 1 && z < GRID - 1;
+function disc(cx, cz, r, fn) {
+  for (let z = Math.floor(cz - r); z <= Math.ceil(cz + r); z++) for (let x = Math.floor(cx - r); x <= Math.ceil(cx + r); x++)
+    if (interior(x, z) && Math.hypot(x - cx, z - cz) <= r) fn(idx(x, z), x, z);
+}
+// Blood vessels: random walks of open floor
+function carveVessels(count) {
+  for (let v = 0; v < count; v++) {
+    let x = randi(3, GRID - 4), z = randi(3, GRID - 4);
+    let [dx, dz] = DIRS[randi(0, 3)];
+    const len = randi(18, 34);
+    for (let s = 0; s < len; s++) {
+      const i = idx(x, z);
+      type[i] = OPEN; vessel[i] = 1; acid[i] = 0;
+      if (Math.random() < 0.18) [dx, dz] = DIRS[randi(0, 3)];
+      const nx = x + dx, nz = z + dz;
+      if (!interior(nx, nz)) { [dx, dz] = DIRS[randi(0, 3)]; continue; }
+      x = nx; z = nz;
+    }
+  }
+}
+// Membranes: straight unchewable walls with a couple of gaps
+function membranes(count) {
+  for (let m = 0; m < count; m++) {
+    const horiz = Math.random() < 0.5;
+    const at = randi(5, GRID - 6);
+    const from = randi(1, 8), to = randi(GRID - 9, GRID - 2);
+    const gaps = [randi(from, to), randi(from, to)];
+    for (let k = from; k <= to; k++) {
+      if (gaps.some(g => k >= g && k <= g + 1)) continue;
+      const [x, z] = horiz ? [k, at] : [at, k];
+      type[idx(x, z)] = WALL;
+    }
+  }
+}
+
+const LAYOUTS = {
+  muscle(level) {
+    membranes(Math.min(MEMBRANES + level - 1, 5));
+    carveVessels(VESSELS);
+  },
+  // Round air sacs, already open, joined by thin tissue
+  alveoli(level) {
+    for (let k = 0; k < 11 + Math.min(level, 6); k++)
+      disc(randi(4, GRID - 5), randi(4, GRID - 5), rand(1.5, 2.6), i => { type[i] = OPEN; vessel[i] = 1; });
+    membranes(1 + Math.floor(level / 3));
+    carveVessels(2);
+  },
+  // A field of tall villi pillars, with acid pools between them
+  villi(level) {
+    for (let z = 1; z < GRID - 1; z++) for (let x = 1; x < GRID - 1; x++)
+      if (x % 3 === 1 && z % 3 === 1) type[idx(x, z)] = DENSE;
+    for (let k = 0; k < 3 + Math.min(level, 4); k++)
+      disc(randi(5, GRID - 6), randi(5, GRID - 6), rand(1.3, 2.3), i => { if (type[i] !== WALL) { type[i] = OPEN; acid[i] = 1; } });
+    membranes(2);
+    carveVessels(2);
+  },
+  // Wavy folds (unchewable) every few rows, lined with denser grey matter, with gaps to slip through
+  folds() {
+    for (let zc = 5; zc < GRID - 4; zc += 5) {
+      const phase = rand(0, 6), amp = rand(1, 2);
+      let prevZ = null, gap = randi(3, 9);
+      for (let x = 1; x < GRID - 1; x++) {
+        const z = Math.round(zc + Math.sin(x * 0.4 + phase) * amp);
+        gap--;
+        const inGap = gap <= 0;
+        if (gap <= -2) gap = randi(6, 12);
+        // Fill the vertical step from the previous column so the fold has no diagonal leaks
+        const lo = Math.min(z, prevZ ?? z), hi = Math.max(z, prevZ ?? z);
+        for (let zz = lo; zz <= hi; zz++) {
+          if (!interior(x, zz)) continue;
+          if (!inGap) type[idx(x, zz)] = WALL;
+          for (const dz of [-1, 1]) if (interior(x, zz + dz) && type[idx(x, zz + dz)] === SOFT) type[idx(x, zz + dz)] = DENSE;
+        }
+        prevZ = z;
+      }
+    }
+    carveVessels(3);
+  },
+  // Bone honeycomb: walls where two cells of the comb meet, soft marrow in the middle of each, hard bone between
+  marrow() {
+    const seeds = Array.from({ length: 12 }, () => [rand(2, GRID - 3), rand(2, GRID - 3)]);
+    for (let z = 1; z < GRID - 1; z++) for (let x = 1; x < GRID - 1; x++) {
+      const d = seeds.map(([sx, sz]) => Math.hypot(x - sx, z - sz)).sort((a, b) => a - b);
+      const i = idx(x, z);
+      if (d[1] - d[0] < 0.9) type[i] = Math.random() < 0.78 ? WALL : DENSE;
+      else type[i] = d[0] < 2.3 ? SOFT : DENSE;
+    }
+    carveVessels(2);
+  },
+  // Rings of muscle round a central chamber, each ring with a few gaps, and fibres between them
+  rings() {
+    const c = (GRID - 1) / 2;
+    const rings = [4.5, 8.5, 12.5].map(R => ({ R, gaps: Array.from({ length: randi(2, 3) }, () => rand(-Math.PI, Math.PI)) }));
+    for (let z = 1; z < GRID - 1; z++) for (let x = 1; x < GRID - 1; x++) {
+      const r = Math.hypot(x - c, z - c), a = Math.atan2(z - c, x - c), i = idx(x, z);
+      if (type[i] === SOFT && Math.sin(a * 10 + r * 0.35) > 0.55) type[i] = DENSE;
+      for (const { R, gaps } of rings) {
+        if (Math.abs(r - R) >= 0.6) continue;
+        const inGap = gaps.some(g => Math.abs(Math.atan2(Math.sin(a - g), Math.cos(a - g))) * R < 1.2);
+        if (!inGap) type[i] = WALL;
+      }
+    }
+    disc(c, c, 2.6, i => { type[i] = OPEN; vessel[i] = 1; });
+    carveVessels(2);
+  },
+};
+
+// Seconds a perfect virus would need from the entry wound to the exit: moving through open cells, chewing the rest
+function fastestEscape() {
+  const step = 1 / VIRUS_SPEED, cost = new Float32Array(N).fill(Infinity), done = new Uint8Array(N);
+  cost[idx(start.x, start.z)] = 0;
+  for (;;) {
+    let c = -1;
+    for (let i = 0; i < N; i++) if (!done[i] && cost[i] < Infinity && (c < 0 || cost[i] < cost[c])) c = i;
+    if (c < 0 || c === idx(exit.x, exit.z)) break;
+    done[c] = 1;
+    const cx = c % GRID, cz = (c / GRID) | 0;
+    for (const [dx, dz] of DIRS) {
+      if (!inside(cx + dx, cz + dz)) continue;
+      const n = idx(cx + dx, cz + dz);
+      if (type[n] === WALL || done[n]) continue;
+      const enter = type[n] === OPEN ? (acid[n] ? step / ACID_SLOW : step) : CHEW_TIME[type[n]] + step;
+      cost[n] = Math.min(cost[n], cost[c] + enter);
+    }
+  }
+  return cost[idx(exit.x, exit.z)];
+}
+
+// If walls cut the exit off, chew-able tissue replaces walls along an L-shaped path
+function ensureReachable() {
+  const seen = new Uint8Array(N), q = [idx(start.x, start.z)];
+  seen[q[0]] = 1;
+  while (q.length) {
+    const c = q.pop(), cx = c % GRID, cz = (c / GRID) | 0;
+    for (const [dx, dz] of DIRS) {
+      const n = idx(cx + dx, cz + dz);
+      if (inside(cx + dx, cz + dz) && !seen[n] && type[n] !== WALL) { seen[n] = 1; q.push(n); }
+    }
+  }
+  if (seen[idx(exit.x, exit.z)]) return;
+  let x = start.x, z = start.z;
+  while (x !== exit.x || z !== exit.z) {
+    if (x !== exit.x) x += Math.sign(exit.x - x); else z += Math.sign(exit.z - z);
+    if (type[idx(x, z)] === WALL) type[idx(x, z)] = SOFT;
+  }
+}
+
+function makeLevel(level) {
+  theme = themeFor(level);
+  chew.fill(0); vessel.fill(0); eaten.fill(0); fat.fill(0); acid.fill(0);
+  const noise = makeNoise(5);
+  for (let z = 0; z < GRID; z++) for (let x = 0; x < GRID; x++)
+    type[idx(x, z)] = !interior(x, z) ? WALL : noise(x, z) > DENSE_THRESHOLD ? DENSE : SOFT;
+  LAYOUTS[theme.layout](level);
+  // Fat pockets: quick to chew, and the virus is hidden inside them
+  const blobs = FAT_BLOBS + Math.floor((level - 1) / 2);
+  for (let b = 0; b < blobs; b++)
+    disc(randi(4, GRID - 5), randi(4, GRID - 5), rand(1.2, 1.9), i => {
+      if (type[i] === WALL || type[i] === OPEN) return;
+      type[i] = FAT; fat[i] = 1;
+    });
+  // Entry wound (start pocket) near the camera, exit capillary far away
+  start = { x: 2, z: GRID - 3 };
+  spawnCell = { x: 1, z: GRID - 2 };
+  for (let z = start.z - 1; z <= start.z + 1; z++) for (let x = start.x - 1; x <= start.x + 1; x++) {
+    const i = idx(x, z);
+    type[i] = OPEN; vessel[i] = 0; eaten[i] = 1; fat[i] = 0; acid[i] = 0;
+  }
+  exit = { x: GRID - 3, z: 2 };
+  for (let z = exit.z - 1; z <= exit.z + 1; z++) for (let x = exit.x - 1; x <= exit.x + 1; x++)
+    if (type[idx(x, z)] === WALL && interior(x, z)) type[idx(x, z)] = SOFT;
+  type[idx(exit.x, exit.z)] = OPEN; vessel[idx(exit.x, exit.z)] = 1; acid[idx(exit.x, exit.z)] = 0;
+  // An easy first few bites: only soft tissue (and no acid) right round the entry wound
+  disc(start.x, start.z, START_SOFT_RADIUS, i => {
+    if (type[i] === DENSE || type[i] === WALL) type[i] = SOFT;
+    acid[i] = 0;
+  });
+  ensureReachable();
+
+  const tallPillars = theme.layout === 'villi';
+  for (let i = 0; i < N; i++) {
+    height[i] = type[i] === WALL ? 1.5
+      : type[i] === DENSE ? (tallPillars ? rand(1.25, 1.6) : rand(1.0, 1.2))
+      : type[i] === FAT ? rand(0.7, 0.85) : rand(0.85, 1.05);
+  }
+}
+
+// Power-ups go in sealed one-cell cavities and in the vessels
+function placePickups() {
+  const far = (x, z) => Math.abs(x - start.x) + Math.abs(z - start.z) > 5 && Math.abs(x - exit.x) + Math.abs(z - exit.z) > 2;
+  const free = i => ![...pickupAt.keys()].some(p => Math.abs(p % GRID - i % GRID) + Math.abs(((p / GRID) | 0) - ((i / GRID) | 0)) < 4);
+  const pick = (test, count) => {
+    const cells = [];
+    for (let i = 0; i < N; i++) if (test(i) && far(i % GRID, (i / GRID) | 0)) cells.push(i);
+    for (let k = 0, tries = 0; k < count && cells.length && tries < 200; tries++) {
+      const i = cells[randi(0, cells.length - 1)];
+      if (!free(i)) continue;
+      addPickup(i, KINDS[randi(0, KINDS.length - 1)]);
+      k++;
+    }
+  };
+  pick(i => type[i] === SOFT || type[i] === DENSE, PICKUPS_IN_TISSUE);
+  pick(i => vessel[i] && type[i] === OPEN, PICKUPS_IN_VESSELS);
+}
+
+// Antibodies track the decoy if there is one, nothing while the virus is hidden, else the virus
+function trackTarget() {
+  if (decoy) return decoy;
+  if (isHidden()) return null;
+  return virus;
+}
+const isHidden = () => power.cloak > 0 || fat[idx(virus.x, virus.z)] === 1;
+
+function computeDist() {
+  dist.fill(-1);
+  const target = trackTarget();
+  if (!target) return;
+  const s = idx(target.x, target.z);
+  let h = 0, t = 0;
+  dist[s] = 0; bfsQueue[t++] = s;
+  while (h < t) {
+    const c = bfsQueue[h++], cx = c % GRID, cz = (c / GRID) | 0;
+    for (const [dx, dz] of DIRS) {
+      const nx = cx + dx, nz = cz + dz;
+      if (!inside(nx, nz)) continue;
+      const n = idx(nx, nz);
+      if (type[n] !== OPEN || dist[n] >= 0) continue;
+      dist[n] = dist[c] + 1; bfsQueue[t++] = n;
+    }
+  }
+}
+
+/* ======== renderer and scene ======== */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+const BG = new THREE.Color(0x2a0a14);
+scene.background = BG;
+scene.fog = new THREE.Fog(BG, 13, 30);
+
+const camera = new THREE.PerspectiveCamera(48, 1, 0.1, 100);
+const CAM_OFFSET = new THREE.Vector3(0, 8, 6.2);
+
+const hemi = new THREE.HemisphereLight(0xffd6e0, 0x3a0c1c, 0.9);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff0f0, 1.7);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -14, right: 14, top: 14, bottom: -14, near: 1, far: 40 });
+sun.shadow.bias = -0.0015;
+scene.add(sun, sun.target);
+// Cool rim light from behind, so characters stand out against the warm tissue
+const rim = new THREE.DirectionalLight(0x8fb4ff, 0.9);
+scene.add(rim, rim.target);
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.45, 0.45, 0.9);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+function resize() {
+  renderer.setSize(innerWidth, innerHeight, false);
+  composer.setPixelRatio(renderer.getPixelRatio());
+  composer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+resize();
+
+/* ======== heartbeat ======== */
+// A lub-dub every HEART_PERIOD seconds; drives the tissue swell, the vessel glow and a soft thump
+const HEART_PERIOD = 0.95;
+const pulseAt = (p, at) => Math.exp(-((p - at) ** 2) / 0.0025);
+const heartbeat = t => { const p = t % HEART_PERIOD; return pulseAt(p, 0.05) + 0.6 * pulseAt(p, 0.3); };
+const beatUniform = { value: 0 };
+
+/* ======== floating plasma motes ======== */
+const MOTES = 500;
+const motePos = new Float32Array(MOTES * 3), moteVel = new Float32Array(MOTES * 3);
+for (let k = 0; k < MOTES; k++) {
+  motePos.set([rand(-2, GRID + 1), rand(0.2, 3), rand(-2, GRID + 1)], k * 3);
+  moteVel.set([rand(-0.15, 0.15), rand(-0.05, 0.08), rand(-0.15, 0.15)], k * 3);
+}
+const moteGeo = new THREE.BufferGeometry();
+moteGeo.setAttribute('position', new THREE.BufferAttribute(motePos, 3));
+const motes = new THREE.Points(moteGeo, new THREE.PointsMaterial({
+  size: 0.09, color: 0xffb0c4, transparent: true, opacity: 0.55, depthWrite: false, blending: THREE.AdditiveBlending,
+}));
+scene.add(motes);
+function updateMotes(dt, t) {
+  for (let k = 0; k < MOTES * 3; k += 3) {
+    motePos[k] += (moteVel[k] + Math.sin(t * 0.7 + k) * 0.05) * dt;
+    motePos[k + 1] += moteVel[k + 1] * dt;
+    motePos[k + 2] += (moteVel[k + 2] + Math.cos(t * 0.6 + k) * 0.05) * dt;
+    if (motePos[k + 1] > 3.2) motePos[k + 1] = 0.2;
+    if (motePos[k + 1] < 0.1) motePos[k + 1] = 3;
+    if (motePos[k] < -2) motePos[k] = GRID + 1; else if (motePos[k] > GRID + 1) motePos[k] = -2;
+    if (motePos[k + 2] < -2) motePos[k + 2] = GRID + 1; else if (motePos[k + 2] > GRID + 1) motePos[k + 2] = -2;
+  }
+  moteGeo.attributes.position.needsUpdate = true;
+}
+
+/* ======== tissue and floor ======== */
+const tissueGeo = new RoundedBoxGeometry(0.92, 1, 0.92, 3, 0.18);
+tissueGeo.translate(0, 0.5, 0);
+// Wet, glossy cells that swell a little with each heartbeat (more at the top than the bottom)
+const tissueMat = new THREE.MeshPhysicalMaterial({
+  roughness: 0.42, clearcoat: 0.7, clearcoatRoughness: 0.25, sheen: 0.6, sheenColor: new THREE.Color(0xffc0d0), sheenRoughness: 0.5,
+});
+tissueMat.onBeforeCompile = shader => {
+  shader.uniforms.uBeat = beatUniform;
+  shader.vertexShader = 'uniform float uBeat;\n' + shader.vertexShader.replace('#include <begin_vertex>',
+    '#include <begin_vertex>\ntransformed.xz *= 1.0 + uBeat * 0.035 * position.y;\ntransformed.y *= 1.0 + uBeat * 0.02;');
+};
+// Tissue cell shapes, one per organ; each stands on y = 0 and is 1 tall before scaling
+function reshape(geo, fn) {
+  const p = geo.attributes.position, v = new THREE.Vector3();
+  for (let k = 0; k < p.count; k++) { v.fromBufferAttribute(p, k); fn(v); p.setXYZ(k, v.x, v.y, v.z); }
+  geo.computeVertexNormals();
+  return geo;
+}
+const SHAPES = {
+  box: tissueGeo,
+  blob: lumpySphere(0.5, 0.07, 3.3).scale(0.96, 1, 0.96).translate(0, 0.5, 0),
+  villus: new THREE.CapsuleGeometry(0.3, 0.5, 6, 14).translate(0, 0.55, 0).scale(1, 1 / 1.1, 1),
+  hex: new THREE.CylinderGeometry(0.5, 0.54, 1, 6, 3).translate(0, 0.5, 0),
+  // Brain: wrinkled sides and a crinkly top
+  fold: reshape(new RoundedBoxGeometry(0.92, 1, 0.92, 5, 0.2).translate(0, 0.5, 0), v => {
+    const w = Math.sin(v.x * 17 + v.z * 5) * Math.sin(v.z * 15 - v.x * 4) * 0.1 * Math.min(1, v.y * 2);
+    v.x *= 1 + w; v.z *= 1 + w;
+    v.y += Math.max(0, v.y - 0.8) * Math.sin(v.x * 20 + v.z * 9) * 0.7;
+  }),
+  // Heart: striations round the sides
+  fiber: reshape(new RoundedBoxGeometry(0.94, 1, 0.94, 4, 0.15).translate(0, 0.5, 0), v => {
+    const r = 1 + Math.sin(v.y * 34) * 0.025;
+    v.x *= r; v.z *= r;
+  }),
+};
+const tissue = new THREE.InstancedMesh(tissueGeo, tissueMat, N);
+tissue.castShadow = tissue.receiveShadow = true;
+scene.add(tissue);
+
+// A nucleus sitting in the top of each cell
+const nuclei = new THREE.InstancedMesh(new THREE.SphereGeometry(0.5, 16, 10),
+  new THREE.MeshPhysicalMaterial({ roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.15 }), N);
+scene.add(nuclei);
+
+const floorGeo = new THREE.BoxGeometry(1, 0.1, 1);
+floorGeo.translate(0, -0.05, 0);
+const floorMat = new THREE.MeshPhysicalMaterial({ roughness: 0.35, clearcoat: 0.8, clearcoatRoughness: 0.2, emissive: 0x801020, emissiveIntensity: 0 });
+const floor = new THREE.InstancedMesh(floorGeo, floorMat, N);
+floor.receiveShadow = true;
+scene.add(floor);
+
+const COL = {
+  soft: new THREE.Color(0xe98a9c), dense: new THREE.Color(0xa8455e), wall: new THREE.Color(0x6d5a8a),
+  fat: new THREE.Color(0xf3d98a), infected: new THREE.Color(0x7fae5a),
+  floor: new THREE.Color(0x4a1a2a), vessel: new THREE.Color(0xa01a34), trail: new THREE.Color(0x2f4a2a),
+  fatFloor: new THREE.Color(0x9a8a40), acidFloor: new THREE.Color(0x2a4a10),
+  nucleus: new THREE.Color(0x8a2a6a), fatNucleus: new THREE.Color(0xc09a50),
+};
+const nucleusSize = new Float32Array(N);
+const tissueBase = Array.from({ length: N }, () => new THREE.Color());
+const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _p = new THREE.Vector3(), _s = new THREE.Vector3(), _c = new THREE.Color();
+const _yAxis = new THREE.Vector3(0, 1, 0);
+
+function setTissue(i, squash = 0, wobble = 0) {
+  const x = i % GRID, z = (i / GRID) | 0;
+  if (type[i] === OPEN) { _s.set(0, 0, 0); _p.set(x, -5, z); _q.identity(); }
+  else {
+    _p.set(x, 0, z);
+    _s.set(1 - 0.3 * squash, height[i] * (1 - 0.65 * squash), 1 - 0.3 * squash);
+    _q.setFromAxisAngle(_yAxis, wobble);
+  }
+  tissue.setMatrixAt(i, _m.compose(_p, _q, _s));
+  tissue.setColorAt(i, _c.copy(tissueBase[i]).lerp(COL.infected, squash * 0.8));
+  // Nucleus: hidden for open cells and membranes
+  if (type[i] === OPEN || type[i] === WALL) _s.set(0, 0, 0);
+  else {
+    const r = nucleusSize[i] * (1 - 0.5 * squash);
+    _p.y = height[i] * (1 - 0.65 * squash) - 0.03;
+    _s.set(r, r * 0.4, r);
+  }
+  nuclei.setMatrixAt(i, _m.compose(_p, _q, _s));
+}
+
+function setFloor(i) {
+  floor.setColorAt(i, fat[i] ? COL.fatFloor : acid[i] ? COL.acidFloor : eaten[i] ? COL.trail : vessel[i] ? COL.vessel : COL.floor);
+}
+
+function buildMeshes() {
+  for (let i = 0; i < N; i++) {
+    const base = type[i] === WALL ? COL.wall : type[i] === DENSE ? COL.dense : type[i] === FAT ? COL.fat : COL.soft;
+    tissueBase[i].copy(base).offsetHSL(rand(-0.015, 0.015), 0, rand(-0.05, 0.05));
+    nucleusSize[i] = type[i] === FAT ? rand(0.12, 0.18) : rand(0.26, 0.36);
+    nuclei.setColorAt(i, _c.copy(type[i] === FAT ? COL.fatNucleus : COL.nucleus).offsetHSL(rand(-0.03, 0.03), 0, rand(-0.05, 0.05)));
+    setTissue(i);
+    floor.setMatrixAt(i, _m.makeTranslation(i % GRID, 0, (i / GRID) | 0));
+    setFloor(i);
+  }
+  tissue.instanceMatrix.needsUpdate = tissue.instanceColor.needsUpdate = true;
+  nuclei.instanceMatrix.needsUpdate = nuclei.instanceColor.needsUpdate = true;
+  floor.instanceMatrix.needsUpdate = floor.instanceColor.needsUpdate = true;
+}
+
+/* ======== exit capillary ======== */
+const exitGroup = new THREE.Group();
+const exitRing = new THREE.Mesh(new THREE.TorusGeometry(0.38, 0.08, 12, 32),
+  new THREE.MeshStandardMaterial({ color: 0xff5a6e, emissive: 0xff2040, emissiveIntensity: 1.4 }));
+exitRing.rotation.x = -Math.PI / 2;
+exitRing.position.y = 0.05;
+const exitBeam = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.3, 3, 20, 1, true),
+  new THREE.MeshBasicMaterial({ color: 0xff6a7e, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false }));
+exitBeam.position.y = 1.5;
+const exitLight = new THREE.PointLight(0xff3050, 6, 5, 2);
+exitLight.position.y = 0.8;
+exitGroup.add(exitRing, exitBeam, exitLight);
+scene.add(exitGroup);
+
+/* ======== red blood cells drifting along the vessels ======== */
+const RBC_MAX = 70;
+const rbcProfile = [[0, 0.025], [0.08, 0.035], [0.15, 0.065], [0.19, 0.05], [0.205, 0], [0.19, -0.05], [0.15, -0.065], [0.08, -0.035], [0, -0.025]]
+  .map(([x, y]) => new THREE.Vector2(x, y));
+const rbcs = new THREE.InstancedMesh(new THREE.LatheGeometry(rbcProfile, 20),
+  new THREE.MeshPhysicalMaterial({ color: 0xd0182e, emissive: 0x400008, roughness: 0.3, clearcoat: 1, side: THREE.DoubleSide }), RBC_MAX);
+rbcs.castShadow = true;
+scene.add(rbcs);
+const rbcList = [];
+function placeRbcs() {
+  rbcList.length = 0;
+  const cells = [];
+  for (let i = 0; i < N; i++) if (vessel[i] && type[i] === OPEN) cells.push(i);
+  const count = Math.min(RBC_MAX, Math.floor(cells.length / 2));
+  for (let k = 0; k < count; k++) {
+    const i = cells[randi(0, cells.length - 1)], x = i % GRID, z = (i / GRID) | 0;
+    rbcList.push({ x, z, px: x + rand(-0.3, 0.3), pz: z + rand(-0.3, 0.3), tx: x, tz: z, last: -1, y: rand(0.15, 0.6),
+      speed: rand(0.6, 1.2), spin: rand(-2, 2), rot: new THREE.Euler(rand(0, 6), rand(0, 6), 0) });
+  }
+  rbcs.count = rbcList.length;
+}
+function updateRbcs(dt, t) {
+  for (let k = 0; k < rbcList.length; k++) {
+    const r = rbcList[k];
+    const dx = r.tx - r.px, dz = r.tz - r.pz, d = Math.hypot(dx, dz);
+    if (d < 0.05) {
+      // Drift on to a random neighbouring vessel cell, not straight back if there's a choice
+      const here = idx(r.x, r.z);
+      let opts = DIRS.map(([ox, oz]) => [r.x + ox, r.z + oz]).filter(([x, z]) => inside(x, z) && vessel[idx(x, z)] && type[idx(x, z)] === OPEN);
+      if (opts.length > 1) opts = opts.filter(([x, z]) => idx(x, z) !== r.last);
+      if (opts.length) {
+        const [x, z] = opts[randi(0, opts.length - 1)];
+        r.last = here; r.x = x; r.z = z; r.tx = x + rand(-0.25, 0.25); r.tz = z + rand(-0.25, 0.25);
+      }
+    } else { r.px += dx / d * r.speed * dt; r.pz += dz / d * r.speed * dt; }
+    r.rot.x += r.spin * dt; r.rot.y += r.spin * 0.7 * dt;
+    _q.setFromEuler(r.rot);
+    _p.set(r.px, r.y + Math.sin(t * 1.5 + k) * 0.08, r.pz);
+    rbcs.setMatrixAt(k, _m.compose(_p, _q, _s.set(1, 1, 1)));
+  }
+  rbcs.instanceMatrix.needsUpdate = true;
+}
+
+/* ======== virus ======== */
+// Shared bits for the character faces
+const eyeWhiteMat = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.15, clearcoat: 1 });
+const darkMat = new THREE.MeshStandardMaterial({ color: 0x14060c, roughness: 0.6 });
+const toothMat = new THREE.MeshStandardMaterial({ color: 0xfffbe8, roughness: 0.3 });
+const sphereGeo = new THREE.SphereGeometry(1, 20, 14);
+const coneGeo = new THREE.ConeGeometry(1, 1, 10);
+const limbGeo = new THREE.CapsuleGeometry(1, 1, 4, 10);
+const onSphere = (x, y, z, r) => new THREE.Vector3(x, y, z).normalize().multiplyScalar(r);
+function ball(mat, r, pos, sx = 1, sy = 1, sz = 1) {
+  const m = new THREE.Mesh(sphereGeo, mat);
+  m.scale.set(r * sx, r * sy, r * sz);
+  m.position.copy(pos);
+  return m;
+}
+// Lumpy sphere: a smooth wobble of the radius, the same for vertices that share a position
+function lumpySphere(r, amount, seed) {
+  const geo = new THREE.SphereGeometry(r, 36, 24);
+  const p = geo.attributes.position, v = new THREE.Vector3();
+  for (let k = 0; k < p.count; k++) {
+    v.fromBufferAttribute(p, k);
+    const n = Math.sin(v.x * 9 + seed) * Math.sin(v.y * 8 + seed * 2) * Math.sin(v.z * 10 + seed * 3);
+    v.multiplyScalar(1 + n * amount);
+    p.setXYZ(k, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// The virus: a spiky purple blob with devil horns, glowing eyes under angry brows, a toothy grin and little clawed arms.
+// It faces +z (towards the camera); the spikes turn on their own around it.
+function makeVirus({ body = 0x5a2290, emissive = 0x1a0630, spike = 0x9cff3a, eye = 0xff2a1a, light = 0x9cff5a } = {}) {
+  const g = new THREE.Group();
+  const bodyMat = new THREE.MeshPhysicalMaterial({ color: body, emissive, roughness: 0.35, clearcoat: 0.8, clearcoatRoughness: 0.2, transparent: true });
+  const spikeMat = new THREE.MeshStandardMaterial({ color: spike, emissive: spike, emissiveIntensity: 0.3, roughness: 0.4, transparent: true });
+  const pupilMat = new THREE.MeshBasicMaterial({ color: eye, transparent: true });
+  const hornMat = new THREE.MeshPhysicalMaterial({ color: 0x2a0a14, roughness: 0.25, clearcoat: 1, transparent: true });
+  g.userData.mats = [bodyMat, spikeMat, pupilMat, hornMat];
+
+  const R = 0.3;
+  const bodyMesh = new THREE.Mesh(lumpySphere(R, 0.06, 1.7), bodyMat);
+  bodyMesh.castShadow = true;
+  g.add(bodyMesh);
+
+  // Spikes everywhere except the face
+  const spikes = new THREE.Group();
+  const stalkGeo = new THREE.CylinderGeometry(0.022, 0.03, 0.14, 6);
+  stalkGeo.translate(0, 0.07, 0);
+  const COUNT = 26;
+  for (let k = 0; k < COUNT; k++) {
+    const y = 1 - 2 * (k + 0.5) / COUNT, r = Math.sqrt(1 - y * y), a = k * 2.399963;
+    const dir = new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r);
+    if (dir.z > 0.35 || dir.y > 0.8) continue;
+    const s = new THREE.Group();
+    s.add(new THREE.Mesh(stalkGeo, spikeMat), ball(spikeMat, 0.045, new THREE.Vector3(0, 0.15, 0)));
+    s.position.copy(dir).multiplyScalar(R * 0.92);
+    s.quaternion.setFromUnitVectors(_yAxis, dir);
+    spikes.add(s);
+  }
+  g.add(spikes);
+
+  // Horns
+  for (const side of [-1, 1]) {
+    const horn = new THREE.Mesh(coneGeo, hornMat);
+    horn.scale.set(0.05, 0.17, 0.05);
+    horn.position.copy(onSphere(side * 0.45, 0.85, 0.15, R * 0.95));
+    horn.rotation.set(-0.2, 0, -side * 0.5);
+    g.add(horn);
+  }
+
+  // Eyes with glowing pupils and angry brows
+  const eyes = new THREE.Group();
+  for (const side of [-1, 1]) {
+    const at = onSphere(side * 0.38, 0.28, 0.88, R * 0.93);
+    eyes.add(ball(eyeWhiteMat, 0.085, at, 1, 0.9, 0.55));
+    eyes.add(ball(pupilMat, 0.03, at.clone().add(new THREE.Vector3(-side * 0.012, 0.005, 0.05)), 0.55, 1.6, 0.5));   // slit pupils
+    const brow = new THREE.Mesh(limbGeo, darkMat);
+    brow.scale.set(0.022, 0.07, 0.022);
+    brow.position.copy(onSphere(side * 0.36, 0.55, 0.78, R * 1.02));
+    brow.rotation.set(0, 0, -side * 1.1);   // slanting down to the middle: angry
+    eyes.add(brow);
+  }
+  g.add(eyes);
+
+  // Grinning mouth with sharp teeth; scaled open while chewing
+  const mouth = new THREE.Group();
+  mouth.position.copy(onSphere(0, -0.3, 0.95, R * 0.9));
+  mouth.add(ball(darkMat, 0.13, new THREE.Vector3(), 1, 0.45, 0.5));
+  for (let k = -2; k <= 2; k++) {
+    const tooth = new THREE.Mesh(coneGeo, toothMat);
+    tooth.scale.set(0.022, 0.05, 0.022);
+    tooth.rotation.x = Math.PI;
+    tooth.position.set(k * 0.045, 0.03 - Math.abs(k) * 0.006, 0.05 - Math.abs(k) * 0.008);
+    mouth.add(tooth);
+  }
+  g.add(mouth);
+
+  // Arms with three-claw hands
+  const arms = [];
+  for (const side of [-1, 1]) {
+    const shoulder = new THREE.Group();
+    shoulder.position.set(side * R * 0.9, -0.05, 0.05);
+    const arm = new THREE.Mesh(limbGeo, bodyMat);
+    arm.scale.set(0.035, 0.09, 0.035);
+    arm.position.y = -0.09;
+    arm.castShadow = true;
+    shoulder.add(arm);
+    const hand = ball(bodyMat, 0.05, new THREE.Vector3(0, -0.2, 0));
+    for (let c = -1; c <= 1; c++) {
+      const claw = new THREE.Mesh(coneGeo, hornMat);
+      claw.scale.set(0.014, 0.05, 0.014);
+      claw.position.set(c * 0.025, -0.24, 0.015);
+      claw.rotation.x = Math.PI;
+      shoulder.add(claw);
+    }
+    shoulder.add(hand);
+    shoulder.rotation.z = side * 0.5;
+    g.add(shoulder);
+    arms.push(shoulder);
+  }
+
+  g.add(new THREE.PointLight(light, 1.2, 3, 2));
+  Object.assign(g.userData, { spikes, mouth, eyes, arms });
+  return g;
+}
+
+// Swing the arms, open the mouth while chewing, blink now and then
+function animateVirus(g, t, chewing, moving) {
+  const u = g.userData;
+  u.spikes.rotation.y += chewing ? 0.25 : 0.02;
+  u.mouth.scale.y = chewing ? 1 + Math.abs(Math.sin(t * 14)) * 1.6 : 1;
+  u.eyes.scale.y = (t % 3.7) < 0.12 ? 0.15 : 1;
+  for (const [k, arm] of u.arms.entries()) {
+    const side = k ? 1 : -1;
+    if (chewing) { arm.rotation.x = -1.2 + Math.sin(t * 16 + k * Math.PI) * 0.5; arm.rotation.z = side * 0.2; }
+    else if (moving) { arm.rotation.x = Math.sin(t * 10 + k * Math.PI) * 0.7; arm.rotation.z = side * 0.5; }
+    else { arm.rotation.x = Math.sin(t * 2 + k) * 0.15; arm.rotation.z = side * (0.5 + Math.sin(t * 3) * 0.1); }
+  }
+}
+const VIRUS_SCALE = 1.35;
+const virusMesh = makeVirus();
+scene.add(virusMesh);
+
+// x,z = cell the virus last stood in; fx,fz = cell it is leaving; tx,tz = cell it is heading to
+const virus = { x: 0, z: 0, fx: 0, fz: 0, px: 0, pz: 0, tx: 0, tz: 0, moving: false, chewing: -1, face: [0, -1], lunge: 0,
+  yaw: 0, side: 1 };
+
+/* ======== power-ups ======== */
+const POWERS = {
+  enzyme: { color: 0xffd23a, secs: 6, icon: '⚡', text: 'Enzyme! Super chewing' },
+  atp:    { color: 0x3ae0ff, secs: 6, icon: '💨', text: 'ATP! Speed boost' },
+  cloak:  { color: 0xc08aff, secs: 6, icon: '👻', text: 'Cloak! They lost your scent' },
+  decoy:  { color: 0xff9a3a, secs: 8, icon: '🎈', text: 'Decoy dropped!' },
+};
+const KINDS = Object.keys(POWERS);
+const power = { enzyme: 0, atp: 0, cloak: 0 };   // seconds left
+let decoy = null;                                 // { x, z, px, pz, t, mesh }
+
+const haloTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d'), grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(255,255,255,1)'); grad.addColorStop(0.3, 'rgba(255,255,255,.5)'); grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+})();
+const gemGeo = new THREE.OctahedronGeometry(0.2);
+
+function addPickup(i, kind) {
+  if (type[i] !== OPEN) { type[i] = OPEN; eaten[i] = 0; }   // carve a little cavity
+  const col = POWERS[kind].color;
+  const g = new THREE.Group();
+  const gem = new THREE.Mesh(gemGeo, new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.9, roughness: 0.3 }));
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: haloTex, color: col, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+  halo.scale.setScalar(1.3);
+  g.add(gem, halo);
+  g.position.set(i % GRID, 0.45, (i / GRID) | 0);
+  g.userData.gem = gem;
+  scene.add(g);
+  pickupAt.set(i, { kind, mesh: g });
+}
+function clearPickups() {
+  for (const p of pickupAt.values()) scene.remove(p.mesh);
+  pickupAt.clear();
+}
+
+function collectPickup(i) {
+  const p = pickupAt.get(i);
+  if (!p) return;
+  scene.remove(p.mesh);
+  pickupAt.delete(i);
+  const P = POWERS[p.kind];
+  if (p.kind === 'decoy') dropDecoy();
+  else power[p.kind] = P.secs;
+  sfx.power();
+  if (p.kind === 'cloak') sfx.cloak();
+  if (Math.random() < 0.6) say('virus-power');
+  toast(`${P.icon} ${P.text}`, 2);
+}
+
+const decoyMesh = makeVirus({ body: 0xff8a30, emissive: 0x401800, spike: 0xffd060, eye: 0x202020, light: 0xffa040 });
+decoyMesh.visible = false;
+decoyMesh.scale.setScalar(VIRUS_SCALE);
+scene.add(decoyMesh);
+function dropDecoy() {
+  decoy = { x: virus.x, z: virus.z, px: virus.x, pz: virus.z, t: POWERS.decoy.secs };
+  decoyMesh.visible = true;
+}
+function popDecoy() {
+  if (!decoy) return;
+  spawnBits(decoy.px, decoy.pz, 8);
+  decoy = null;
+  decoyMesh.visible = false;
+}
+
+/* ======== antibodies ======== */
+// The antibodies are white blood cell guards: a lumpy white body with a stern face and a police cap,
+// walking on two legs and waving a Y-shaped antibody like a truncheon. They face +z; the root sits on the floor.
+const wbcMat = new THREE.MeshPhysicalMaterial({ color: 0xf2f5ff, emissive: 0x1a2440, roughness: 0.45, sheen: 1, sheenColor: new THREE.Color(0xa8c4ff) });
+const capMat = new THREE.MeshPhysicalMaterial({ color: 0x1f3a8a, roughness: 0.4, clearcoat: 0.6 });
+const visorMat = new THREE.MeshPhysicalMaterial({ color: 0x0c1020, roughness: 0.15, clearcoat: 1 });
+const badgeMat = new THREE.MeshStandardMaterial({ color: 0xffcc40, emissive: 0x805000, metalness: 0.8, roughness: 0.25 });
+const bootMat = new THREE.MeshStandardMaterial({ color: 0x1a2550, roughness: 0.5 });
+const irisMat = new THREE.MeshBasicMaterial({ color: 0x1f6aff });
+const abMat = new THREE.MeshStandardMaterial({ color: 0xdfe9ff, emissive: 0x2a4a9a, roughness: 0.35 });
+const abTipMat = new THREE.MeshStandardMaterial({ color: 0x6ab8ff, emissive: 0x3a8aff, emissiveIntensity: 1.4 });
+const wbcBodyGeos = [lumpySphere(0.27, 0.07, 0.3), lumpySphere(0.27, 0.07, 2.1), lumpySphere(0.27, 0.07, 4.4)];
+const crownGeo = new THREE.CylinderGeometry(0.2, 0.15, 0.1, 20);
+const visorGeo = new THREE.CylinderGeometry(0.17, 0.17, 0.015, 20, 1, false, -Math.PI / 2, Math.PI);
+const questionTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d');
+  g.font = 'bold 54px Verdana'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.lineWidth = 8; g.strokeStyle = '#1a2550'; g.strokeText('?', 32, 35);
+  g.fillStyle = '#ffffff'; g.fillText('?', 32, 35);
+  return new THREE.CanvasTexture(c);
+})();
+const questionMat = new THREE.SpriteMaterial({ map: questionTex, transparent: true, depthWrite: false });
+
+function makeYStaff() {
+  const y = new THREE.Group();
+  const stick = (len, x, yy, rz) => {
+    const m = new THREE.Mesh(limbGeo, abMat);
+    m.scale.set(0.022, len / 2, 0.022);
+    m.position.set(x, yy, 0); m.rotation.z = rz;
+    y.add(m);
+  };
+  stick(0.2, 0, 0.1, 0);
+  for (const side of [-1, 1]) {
+    stick(0.14, side * 0.045, 0.25, -side * 0.6);
+    y.add(ball(abTipMat, 0.035, new THREE.Vector3(side * 0.09, 0.32, 0)));
+  }
+  return y;
+}
+
+function makeAntibodyMesh() {
+  const g = new THREE.Group();
+  const bob = new THREE.Group();
+  g.add(bob);
+
+  const body = new THREE.Mesh(wbcBodyGeos[randi(0, 2)], wbcMat);
+  body.position.y = 0.42;
+  body.scale.set(1, 1.05, 0.95);
+  body.castShadow = true;
+  bob.add(body);
+
+  // Face
+  const C = new THREE.Vector3(0, 0.42, 0), R = 0.26;
+  const at = (x, y, z, r = R) => onSphere(x, y, z, r).add(C);
+  for (const side of [-1, 1]) {
+    const e = at(side * 0.33, 0.2, 0.92);
+    bob.add(ball(eyeWhiteMat, 0.07, e, 1, 1.05, 0.5));
+    bob.add(ball(irisMat, 0.032, e.clone().add(new THREE.Vector3(0, -0.005, 0.032)), 1, 1, 0.4));
+    bob.add(ball(darkMat, 0.015, e.clone().add(new THREE.Vector3(0, -0.005, 0.045)), 1, 1, 0.4));
+    const brow = new THREE.Mesh(limbGeo, darkMat);
+    brow.scale.set(0.016, 0.05, 0.016);
+    brow.position.copy(at(side * 0.33, 0.45, 0.83, R * 1.03));
+    brow.rotation.z = -side * 1.35;   // nearly flat, a little stern
+    bob.add(brow);
+  }
+  const mouth = new THREE.Mesh(limbGeo, darkMat);
+  mouth.scale.set(0.014, 0.04, 0.014);
+  mouth.rotation.z = Math.PI / 2;
+  mouth.position.copy(at(0, -0.22, 0.97));
+  bob.add(mouth);
+
+  // Police cap
+  const cap = new THREE.Group();
+  cap.position.set(0, 0.42 + R * 0.9, -0.02);
+  cap.rotation.x = -0.15;
+  const crown = new THREE.Mesh(crownGeo, capMat);
+  crown.position.y = 0.05;
+  crown.castShadow = true;
+  const visor = new THREE.Mesh(visorGeo, visorMat);
+  visor.position.set(0, 0.0, 0.06);
+  visor.rotation.x = 0.25;
+  cap.add(crown, visor, ball(badgeMat, 0.028, new THREE.Vector3(0, 0.06, 0.17), 1, 1.2, 0.4));
+  bob.add(cap);
+
+  // Arms: the left swings, the right holds the Y-shaped antibody
+  const arms = [];
+  for (const side of [-1, 1]) {
+    const shoulder = new THREE.Group();
+    shoulder.position.set(side * 0.25, 0.45, 0);
+    const arm = new THREE.Mesh(limbGeo, wbcMat);
+    arm.scale.set(0.04, 0.07, 0.04);
+    arm.position.y = -0.08;
+    shoulder.add(arm, ball(wbcMat, 0.05, new THREE.Vector3(0, -0.18, 0)));
+    if (side === 1) {
+      const staff = makeYStaff();
+      staff.position.set(0, -0.18, 0.02);
+      staff.rotation.x = Math.PI / 2 - 0.3;   // pointing forward and up
+      shoulder.add(staff);
+    }
+    shoulder.rotation.z = side * 0.35;
+    bob.add(shoulder);
+    arms.push(shoulder);
+  }
+
+  // Legs with boots
+  const legs = [];
+  for (const side of [-1, 1]) {
+    const hip = new THREE.Group();
+    hip.position.set(side * 0.1, 0.2, 0);
+    const leg = new THREE.Mesh(limbGeo, wbcMat);
+    leg.scale.set(0.045, 0.06, 0.045);
+    leg.position.y = -0.07;
+    hip.add(leg, ball(bootMat, 0.06, new THREE.Vector3(0, -0.16, 0.03), 1, 0.7, 1.4));
+    g.add(hip);
+    legs.push(hip);
+  }
+
+  const question = new THREE.Sprite(questionMat);
+  question.position.y = 1.0;
+  question.scale.setScalar(0.35);
+  question.visible = false;
+  g.add(question);
+
+  Object.assign(g.userData, { bob, arms, legs, question });
+  return g;
+}
+
+const lerpAngle = (a, b, t) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * t;
+
+// Walk cycle, staff waving, the "?" when they've lost the scent
+function animateAntibody(a, dt, moved, hunting) {
+  const u = a.mesh.userData;
+  a.walk += moved * 11;
+  const walking = moved > 1e-4;
+  const swing = walking ? Math.sin(a.walk) : 0;
+  u.legs[0].rotation.x = swing * 0.7;
+  u.legs[1].rotation.x = -swing * 0.7;
+  u.arms[0].rotation.x = -swing * 0.6;
+  u.arms[1].rotation.x = hunting ? -0.5 + Math.sin(a.phase * 9) * 0.35 : -0.15 + swing * 0.2;
+  u.bob.position.y = walking ? Math.abs(Math.sin(a.walk)) * 0.04 : Math.sin(a.phase * 2) * 0.01;
+  u.bob.rotation.z = walking ? Math.sin(a.walk) * 0.06 : 0;
+  u.question.visible = !hunting && a.grow >= 1;
+  u.question.position.y = 1.0 + Math.sin(a.phase * 3) * 0.05;
+  // Face where it's walking, or the virus when standing still
+  const want = walking ? Math.atan2(a.dx, a.dz) : Math.atan2(virus.px - a.px, virus.pz - a.pz);
+  a.yaw = lerpAngle(a.yaw, want, 1 - Math.exp(-dt * 10));
+  a.mesh.rotation.y = a.yaw;
+}
+
+const antibodies = [];
+function addAntibody(x, z) {
+  const mesh = makeAntibodyMesh();
+  mesh.scale.setScalar(0.01);
+  scene.add(mesh);
+  antibodies.push({ x, z, px: x, pz: z, tx: x, tz: z, moving: false, last: -1, mesh, phase: Math.random() * 6, grow: 0,
+    walk: 0, yaw: 0, dx: 0, dz: 1, wasHunting: null });
+}
+function clearAntibodies() {
+  for (const a of antibodies) scene.remove(a.mesh);
+  antibodies.length = 0;
+}
+
+/* ======== organ extras: acid pools with bubbles (the Gut), nerve sparks running along the folds (the Brain) ======== */
+const acidMat = new THREE.MeshStandardMaterial({ color: 0x9aff3a, emissive: 0x7aff30, emissiveIntensity: 1.2, roughness: 0.15,
+  transparent: true, opacity: 0.85 });
+const acidMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 0.06, 1), acidMat, N);
+acidMesh.count = 0;
+scene.add(acidMesh);
+const acidCells = [];
+const bubbleMat = new THREE.SpriteMaterial({ map: haloTex, color: 0xc8ff80, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+const bubbles = Array.from({ length: 30 }, () => {
+  const s = new THREE.Sprite(bubbleMat);
+  s.visible = false;
+  scene.add(s);
+  return { s, life: 0 };
+});
+
+const sparkMat = new THREE.SpriteMaterial({ map: haloTex, color: 0x9ad0ff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+const sparks = Array.from({ length: 22 }, () => {
+  const s = new THREE.Sprite(sparkMat);
+  s.visible = false;
+  scene.add(s);
+  return { s, cell: -1, prev: -1, next: -1, t: 0, life: 0 };
+});
+let wallCells = [];
+
+function setupOrganExtras() {
+  acidCells.length = 0;
+  for (let i = 0; i < N; i++) if (acid[i]) acidCells.push(i);
+  acidCells.forEach((i, k) => acidMesh.setMatrixAt(k, _m.makeTranslation(i % GRID, 0.03, (i / GRID) | 0)));
+  acidMesh.count = acidCells.length;
+  acidMesh.instanceMatrix.needsUpdate = true;
+  for (const b of bubbles) { b.life = 0; b.s.visible = false; }
+  wallCells = [];
+  if (theme.sparks) for (let i = 0; i < N; i++) if (type[i] === WALL && interior(i % GRID, (i / GRID) | 0)) wallCells.push(i);
+  for (const sp of sparks) { sp.life = 0; sp.s.visible = false; }
+}
+
+function nextWall(cell, prev) {
+  const cx = cell % GRID, cz = (cell / GRID) | 0;
+  const opts = DIRS.map(([dx, dz]) => idx(cx + dx, cz + dz))
+    .filter(n => n !== prev && type[n] === WALL && interior(n % GRID, (n / GRID) | 0));
+  return opts.length ? opts[randi(0, opts.length - 1)] : -1;
+}
+
+function updateOrganExtras(dt, t) {
+  if (acidCells.length) {
+    acidMat.emissiveIntensity = 1.1 + Math.sin(t * 3) * 0.35;
+    for (const b of bubbles) {
+      if (b.life <= 0) {
+        if (Math.random() < dt * 2) {
+          const i = acidCells[randi(0, acidCells.length - 1)];
+          b.s.position.set(i % GRID + rand(-0.4, 0.4), 0.08, ((i / GRID) | 0) + rand(-0.4, 0.4));
+          b.life = rand(0.6, 1.4);
+          b.s.visible = true;
+        }
+        continue;
+      }
+      b.life -= dt;
+      b.s.position.y += dt * 0.35;
+      b.s.scale.setScalar(0.12 + (1.4 - b.life) * 0.18);
+      if (b.life <= 0) b.s.visible = false;
+    }
+  }
+  if (wallCells.length) {
+    for (const sp of sparks) {
+      if (sp.life <= 0) {
+        if (Math.random() < dt * 1.5) {
+          sp.cell = wallCells[randi(0, wallCells.length - 1)];
+          sp.prev = -1; sp.next = nextWall(sp.cell, -1); sp.t = 0;
+          sp.life = sp.next < 0 ? 0 : rand(1, 2.5);
+          sp.s.visible = sp.life > 0;
+        }
+        continue;
+      }
+      sp.life -= dt;
+      sp.t += dt * 7;
+      while (sp.t >= 1 && sp.life > 0) {
+        sp.t -= 1;
+        sp.prev = sp.cell; sp.cell = sp.next;
+        sp.next = nextWall(sp.cell, sp.prev);
+        if (sp.next < 0) sp.life = 0;
+      }
+      if (sp.life <= 0) { sp.s.visible = false; continue; }
+      const ax = sp.cell % GRID, az = (sp.cell / GRID) | 0, bx = sp.next % GRID, bz = (sp.next / GRID) | 0;
+      sp.s.position.set(lerp(ax, bx, sp.t), 1.6, lerp(az, bz, sp.t));
+      sp.s.scale.setScalar(0.45 + Math.random() * 0.35);
+    }
+  }
+}
+
+// Colours, cell shapes and extras for the current organ
+function applyTheme() {
+  const th = theme;
+  scene.background.set(th.bg);
+  scene.fog.color.set(th.bg);
+  hemi.color.set(th.sky);
+  hemi.groundColor.set(th.ground);
+  COL.soft.set(th.soft); COL.dense.set(th.dense); COL.wall.set(th.wall); COL.fat.set(th.fat);
+  COL.nucleus.set(th.nucleusCol ?? 0x8a2a6a);
+  COL.floor.set(th.floor); COL.vessel.set(th.lane);
+  tissue.geometry = SHAPES[th.shape];
+  tissueMat.sheenColor.set(th.soft);
+  nuclei.visible = th.nucleus;
+  floorMat.emissive.set(th.lane).multiplyScalar(0.6);
+  motes.material.color.set(th.motes);
+  motes.material.size = th.moteSize ?? 0.09;
+  const hex = c => '#' + new THREE.Color(c).getHexString();
+  Object.assign(MM_COL, { [SOFT]: hex(th.soft), [DENSE]: hex(th.dense), [WALL]: hex(th.wall), [FAT]: hex(th.fat), lane: hex(th.lane) });
+  $('hLevel').textContent = `${level} ${th.icon}`;
+}
+
+/* ======== chew particles ======== */
+const bitGeo = new THREE.IcosahedronGeometry(0.06, 0);
+const bitMat = new THREE.MeshStandardMaterial({ color: 0xe98a9c, roughness: 0.6 });
+const bits = Array.from({ length: 40 }, () => {
+  const m = new THREE.Mesh(bitGeo, bitMat);
+  m.visible = false;
+  scene.add(m);
+  return { m, vx: 0, vy: 0, vz: 0, life: 0 };
+});
+let bitNext = 0;
+function spawnBits(x, z, n) {
+  for (let k = 0; k < n; k++) {
+    const b = bits[bitNext++ % bits.length];
+    b.m.position.set(x + rand(-0.3, 0.3), rand(0.3, 0.8), z + rand(-0.3, 0.3));
+    b.vx = rand(-1.5, 1.5); b.vy = rand(1, 3); b.vz = rand(-1.5, 1.5);
+    b.life = rand(0.4, 0.7);
+    b.m.visible = true;
+  }
+}
+function updateBits(dt) {
+  for (const b of bits) {
+    if (!b.m.visible) continue;
+    b.life -= dt;
+    if (b.life <= 0) { b.m.visible = false; continue; }
+    b.vy -= 9 * dt;
+    b.m.position.x += b.vx * dt; b.m.position.y = Math.max(0.05, b.m.position.y + b.vy * dt); b.m.position.z += b.vz * dt;
+    b.m.scale.setScalar(Math.min(1, b.life * 3));
+  }
+}
+
+/* ======== sound: ElevenLabs clips and music from assets/, synthesized fallback ========
+   Clips start downloading now and are decoded once the first key press unlocks audio. Every effect falls back to
+   its synthesized version while (or if) its clip isn't there, e.g. when opened from disk. */
+const ASSET_V = 1;            // bump after replacing any file in assets/
+const SFX_VOL = 0.75;         // sound effect clips
+const VOICE_VOL = 1;          // spoken lines
+const MUSIC_VOL = 0.3;        // music
+const MUSIC_DUCK = 0.4;       // music level (fraction) while someone talks
+const MUSIC_XFADE = 2;        // seconds of each track's end blended into its start, so the loop has no seam
+const HEART_VOL = 0.35;       // the recorded heartbeat, quiet because it repeats all the time
+const VOICE_GAP = 4;          // seconds before the same kind of line can be said again
+const VOICE_GAP_LONG = { 'virus-chew': 14, 'virus-bump': 8, 'virus-power': 8 };   // ...longer for the chatty ones
+const CHEW_TAUNT = 0.15;      // chance the virus says something when it finishes chewing a cell
+const CLIP_TRIM = {           // per-clip level trims, measured so the clips sit at a similar loudness
+  'sfx-whistle': 0.3, 'sfx-bump': 4, 'sfx-pop': 4, 'sfx-gulp': 1.6, 'sfx-heartbeat': 1.4, 'sfx-cloak': 0.6,
+  'sfx-chomp2': 0.8, 'sfx-chomp3': 1.4, 'sfx-caught': 0.7, 'sfx-cackle': 0.7,
+  'say-guard-there': 1.4, 'say-guard-fake': 1.2, 'music-chase': 0.7,
+  'say-virus-escape': 0.75, 'say-virus-start-4': 0.75, 'say-virus-caught-3': 0.75, 'say-virus-power-3': 0.7,
+  'say-virus-power-4': 0.7, 'say-virus-chew-2': 0.75, 'say-virus-bump-3': 0.75,
+};
+const MUSIC_END = { 'music-chase': 43.2 };   // seconds; the track goes quiet after this, so its loop ends here
+// Spoken lines, grouped by the moment they're for; each time one variant is picked, never the one said last time
+const VOICE = {};
+for (const [g, n] of [['guard-halt', 5], ['guard-there', 5], ['guard-where', 4], ['guard-gotcha', 4], ['guard-fake', 4],
+  ['virus-start', 4], ['virus-escape', 4], ['virus-caught', 4], ['virus-power', 4], ['virus-hide', 4]])
+  VOICE[g] = Array.from({ length: n }, (_, k) => `say-${g}${k ? '-' + (k + 1) : ''}`);
+for (const [g, n] of [['virus-chew', 4], ['virus-bump', 3]])
+  VOICE[g] = Array.from({ length: n }, (_, k) => `say-${g}-${k + 1}`);
+for (const o of ['muscle', 'lungs', 'gut', 'brain', 'bone', 'heart']) VOICE['virus-organ-' + o] = ['say-virus-organ-' + o];
+const SAY = Object.values(VOICE).flat();
+const CLIPS = [...SAY,
+  ...['chomp1', 'chomp2', 'chomp3', 'gulp', 'bump', 'power', 'whistle', 'caught', 'cackle', 'heartbeat', 'pop', 'cloak'].map(n => 'sfx-' + n),
+  'music-title', 'music-play', 'music-chase', 'sting-escape', 'sting-caught'];
+const LOOPS = ['music-title', 'music-play', 'music-chase'];
+
+const rawClips = {}, clips = {};
+for (const n of CLIPS) rawClips[n] = fetch(`assets/${n}.mp3?v=${ASSET_V}`).then(r => r.ok ? r.arrayBuffer() : null).catch(() => null);
+
+let ac = null, master = null, sfxBus = null, voiceBus = null, musicBus = null;
+let muted = false;
+try { muted = localStorage.getItem('virusescape.muted') === '1'; } catch {}
+
+function audio() {
+  if (!ac) {
+    try { ac = new AudioContext(); } catch { return null; }
+    master = ac.createGain(); master.gain.value = muted ? 0 : 1; master.connect(ac.destination);
+    sfxBus = ac.createGain(); sfxBus.connect(master);
+    voiceBus = ac.createGain(); voiceBus.connect(master);
+    musicBus = ac.createGain(); musicBus.gain.value = MUSIC_VOL; musicBus.connect(master);
+    for (const n of CLIPS) rawClips[n].then(b => b && new Promise((ok, no) => ac.decodeAudioData(b, ok, no)))
+      .then(buf => { if (buf) clips[n] = LOOPS.includes(n) ? loopable(buf, MUSIC_END[n]) : buf; }).catch(() => {});
+  }
+  if (ac.state === 'suspended') ac.resume();
+  return ac;
+}
+
+function toggleMute() {
+  muted = !muted;
+  try { localStorage.setItem('virusescape.muted', muted ? '1' : '0'); } catch {}
+  if (master) master.gain.setTargetAtTime(muted ? 0 : 1, ac.currentTime, 0.05);
+  toast(muted ? '🔇 Sound off' : '🔊 Sound on', 1.2);
+}
+
+// Cut a track at `end` seconds and blend its last MUSIC_XFADE seconds into its start (equal power)
+function loopable(buf, end = buf.duration) {
+  const X = Math.floor(MUSIC_XFADE * buf.sampleRate), L = Math.floor(end * buf.sampleRate) - X;
+  const b = ac.createBuffer(buf.numberOfChannels, L, buf.sampleRate);
+  for (let c = 0; c < buf.numberOfChannels; c++) {
+    const d = buf.getChannelData(c), o = b.getChannelData(c);
+    o.set(d.subarray(0, L));
+    for (let i = 0; i < X; i++) { const u = i / X; o[i] = d[i] * Math.sin(u * Math.PI / 2) + d[L + i] * Math.cos(u * Math.PI / 2); }
+  }
+  return b;
+}
+
+// Plays a loaded clip; returns null if it isn't loaded, so the caller can synthesize instead
+function clip(name, { vol = SFX_VOL, rate = 1, bus = sfxBus, delay = 0 } = {}) {
+  const buf = clips[name];
+  if (!ac || !buf) return null;
+  const s = ac.createBufferSource(), g = ac.createGain();
+  s.buffer = buf; s.playbackRate.value = rate;
+  g.gain.value = vol * (CLIP_TRIM[name] ?? 1);
+  s.connect(g).connect(bus);
+  s.start(ac.currentTime + delay);
+  return s;
+}
+
+function noiseBurst(dur, freq, gain) {
+  const a = audio(); if (!a) return;
+  const buf = a.createBuffer(1, Math.ceil(a.sampleRate * dur), a.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / d.length);
+  const src = a.createBufferSource(); src.buffer = buf;
+  const f = a.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = freq;
+  const g = a.createGain(); g.gain.value = gain;
+  src.connect(f).connect(g).connect(sfxBus);
+  src.start();
+}
+function tone(freq, dur, type = 'sine', gain = 0.15, slideTo = null, delay = 0) {
+  const a = audio(); if (!a) return;
+  const t = a.currentTime + delay;
+  const o = a.createOscillator(); o.type = type; o.frequency.setValueAtTime(freq, t);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+  const g = a.createGain(); g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  o.connect(g).connect(sfxBus);
+  o.start(t); o.stop(t + dur);
+}
+
+const sfx = {
+  chomp: () => clip(`sfx-chomp${randi(1, 3)}`, { rate: rand(0.9, 1.15) }) || noiseBurst(0.09, rand(600, 1100), 0.35),
+  gulp: () => clip('sfx-gulp', { rate: rand(0.95, 1.1) }) || tone(220, 0.15, 'sine', 0.2, 90),
+  bump: () => clip('sfx-bump') || tone(110, 0.12, 'triangle', 0.15, 70),
+  pop: () => clip('sfx-pop') || tone(300, 0.12, 'square', 0.08, 80),
+  cloak: () => clip('sfx-cloak') || tone(900, 0.4, 'sine', 0.06, 300),
+  spawn: () => clip('sfx-whistle') || (tone(880, 0.12, 'square', 0.05), tone(660, 0.15, 'square', 0.05, null, 0.12)),
+  heartbeat: () => clip('sfx-heartbeat', { vol: HEART_VOL * Math.min(1.8, theme.beat) }) || (tone(62, 0.2, 'sine', 0.22, 40), tone(55, 0.16, 'sine', 0.14, 38, 0.25)),
+  power: () => clip('sfx-power') || [660, 880, 1320].forEach((f, k) => tone(f, 0.18, 'sine', 0.14, null, k * 0.06)),
+  caught: () => { clip('sfx-caught') || tone(440, 0.8, 'sawtooth', 0.12, 60); sting('sting-caught', 0.6); },
+  escaped: () => {
+    clip('sfx-cackle') || [523, 659, 784, 1047].forEach((f, k) => tone(f, 0.25, 'triangle', 0.15, null, k * 0.11));
+    sting('sting-escape', 0.3);
+  },
+};
+
+/* ======== voices: one line at a time, with the music ducked under it ======== */
+let voiceBusyUntil = 0;
+const voiceQueue = [], lastSaid = {}, lastVariant = {};
+// group: a key of VOICE. force: say it even if that kind of line was said just now, ahead of anything queued
+function say(group, { force = false } = {}) {
+  if (!ac) return;
+  let opts = VOICE[group].filter(n => clips[n]);
+  if (!opts.length) return;
+  const now = ac.currentTime;
+  if (!force && now - (lastSaid[group] ?? -99) < (VOICE_GAP_LONG[group] ?? VOICE_GAP)) return;
+  lastSaid[group] = now;
+  if (opts.length > 1) opts = opts.filter(n => n !== lastVariant[group]);
+  const name = opts[randi(0, opts.length - 1)];
+  lastVariant[group] = name;
+  if (force) voiceQueue.unshift(name); else if (voiceQueue.length < 2) voiceQueue.push(name);
+  pumpVoice();
+}
+function pumpVoice() {
+  if (!ac || !voiceQueue.length || ac.currentTime < voiceBusyUntil) return;
+  const s = clip(voiceQueue.shift(), { vol: VOICE_VOL, bus: voiceBus });
+  if (!s) return;
+  voiceBusyUntil = ac.currentTime + s.buffer.duration;
+  musicBus.gain.setTargetAtTime(MUSIC_VOL * MUSIC_DUCK, ac.currentTime, 0.08);
+  s.onended = () => { musicBus.gain.setTargetAtTime(MUSIC_VOL, ac.currentTime, 0.3); pumpVoice(); };
+}
+function hushVoices() { voiceQueue.length = 0; }
+
+/* ======== music: a title loop, a gameplay loop that crossfades into a chase loop as guards close in, stings ======== */
+const music = {};             // loop name -> { src, gain }
+let musicMode = 'title', chase = 0;
+function sting(name, delay) {
+  musicMode = 'none';
+  clip(name, { vol: 1, bus: musicBus, delay });
+}
+// Every frame: start each loop once it's decoded and wanted, and ease its level toward where it should be
+function updateMusic(dt, danger) {
+  if (!ac) return;
+  chase = lerp(chase, danger, 1 - Math.exp(-dt * 1.5));
+  const want = {
+    'music-title': musicMode === 'title' ? 1 : 0,
+    'music-play': musicMode === 'play' ? 1 - chase : 0,
+    'music-chase': musicMode === 'play' ? chase : 0,
+  };
+  for (const n of LOOPS) {
+    let m = music[n];
+    if (!m && want[n] > 0.01 && clips[n]) {
+      const src = ac.createBufferSource(), gain = ac.createGain();
+      src.buffer = clips[n]; src.loop = true;
+      gain.gain.value = 0;
+      src.connect(gain).connect(musicBus);
+      src.start();
+      m = music[n] = { src, gain };
+    }
+    if (m) m.gain.gain.setTargetAtTime(want[n] * (CLIP_TRIM[n] ?? 1), ac.currentTime, 0.25);
+  }
+}
+
+/* ======== input ======== */
+const KEYDIR = {
+  ArrowUp: [0, -1], KeyW: [0, -1], ArrowDown: [0, 1], KeyS: [0, 1],
+  ArrowLeft: [-1, 0], KeyA: [-1, 0], ArrowRight: [1, 0], KeyD: [1, 0],
+};
+const held = [];
+let tapped = null, tappedAt = 0;   // a quick tap is remembered until the next cell centre
+addEventListener('keydown', e => {
+  if (KEYDIR[e.code] || e.code === 'Space') e.preventDefault();
+  audio();
+  if (KEYDIR[e.code] && !held.includes(e.code)) held.push(e.code);
+  if (KEYDIR[e.code] && !e.repeat) { tapped = KEYDIR[e.code]; tappedAt = performance.now(); }
+  if (state === 'title' && KEYDIR[e.code]) begin();
+  else if ((state === 'caught' || state === 'escaped') && (e.code === 'Space' || e.code === 'Enter')) {
+    if (state === 'escaped') level++;
+    newLevel(); begin();
+  } else if (state === 'play' && e.code === 'KeyR') { newLevel(); begin(); }
+  if (e.code === 'KeyM' && !e.repeat) toggleMute();
+});
+addEventListener('keyup', e => {
+  const k = held.indexOf(e.code);
+  if (k >= 0) held.splice(k, 1);
+});
+addEventListener('blur', () => { held.length = 0; tapped = null; });
+function wantedDir() {
+  if (held.length) return KEYDIR[held[held.length - 1]];
+  if (tapped && performance.now() - tappedAt < TAP_BUFFER * 1000) return tapped;
+  return null;
+}
+
+/* ======== game state ======== */
+let state = 'title';
+let level = 1;
+let elapsed = 0, waveTimer = 0, eatenCount = 0, bumpCooldown = 0, chompTimer = 0, firstWaveDone = false;
+const $ = id => document.getElementById(id);
+
+function newLevel() {
+  makeLevel(level);
+  applyTheme();
+  clearPickups();
+  placePickups();
+  placeRbcs();
+  buildMeshes();
+  setupOrganExtras();
+  acidWarned = false;
+  clearAntibodies();
+  popDecoy();
+  power.enzyme = power.atp = power.cloak = 0;
+  tapped = null;
+  Object.assign(virus, { x: start.x, z: start.z, fx: start.x, fz: start.z, px: start.x, pz: start.z, tx: start.x, tz: start.z,
+    moving: false, chewing: -1, lunge: 0 });
+  exitGroup.position.set(exit.x, 0, exit.z);
+  computeDist();
+  // Patrols waiting in the vessels, away from the entry wound
+  const cells = [];
+  for (let i = 0; i < N; i++) {
+    const x = i % GRID, z = (i / GRID) | 0;
+    if (vessel[i] && type[i] === OPEN && Math.abs(x - start.x) + Math.abs(z - start.z) > 10 && !(x === exit.x && z === exit.z)) cells.push(i);
+  }
+  for (let k = 0; k < PATROLS + level - 1 && cells.length; k++) {
+    const i = cells.splice(randi(0, cells.length - 1), 1)[0];
+    addAntibody(i % GRID, (i / GRID) | 0);
+  }
+  elapsed = 0; eatenCount = 0;
+  waveTimer = Math.max(FIRST_WAVE_MIN, fastestEscape() * FIRST_WAVE_FRACTION);
+  firstWaveDone = false;
+  snapCamera();
+}
+
+function begin() {
+  state = 'play';
+  $('overlay').classList.add('hidden');
+  toast(`${theme.icon} Level ${level}: ${theme.name}`, 3);
+  musicMode = 'play'; chase = 0; wasHidden = false;
+  hushVoices();
+  // On an organ's first visit the virus comments on it; after that it's a coin toss with the general lines
+  sayWhenReady(level <= THEMES.length || Math.random() < 0.5 ? 'virus-organ-' + theme.key : 'virus-start', 3000);
+}
+// The first level starts on the key press that unlocks audio, before the clips are decoded: wait a moment for them
+function sayWhenReady(name, within) {
+  const until = performance.now() + within;
+  const tryIt = () => { if (VOICE[name].some(n => clips[n])) say(name); else if (performance.now() < until) setTimeout(tryIt, 100); };
+  tryIt();
+}
+
+function showCard(html) {
+  $('card').innerHTML = html;
+  $('overlay').classList.remove('hidden');
+}
+
+let toastTimer = 0;
+function toast(text, secs = 2) {
+  $('toast').textContent = text;
+  $('toast').classList.add('on');
+  toastTimer = secs;
+}
+
+const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+/* ======== update: virus ======== */
+function startMove(nx, nz) {
+  virus.fx = virus.x; virus.fz = virus.z;
+  virus.tx = nx; virus.tz = nz; virus.moving = true;
+  virus.face = [nx - virus.x, nz - virus.z];
+  tapped = null;   // a tap moves one cell
+  stopChewing();
+}
+
+function stopChewing() {
+  if (virus.chewing < 0) return;
+  setTissue(virus.chewing, chew[virus.chewing]);
+  tissue.instanceMatrix.needsUpdate = nuclei.instanceMatrix.needsUpdate = tissue.instanceColor.needsUpdate = true;
+  virus.chewing = -1;
+}
+
+function arrive() {
+  virus.px = virus.tx; virus.pz = virus.tz;
+  virus.x = virus.tx; virus.z = virus.tz; virus.moving = false;
+  const here = idx(virus.x, virus.z);
+  if (!eaten[here]) { eaten[here] = 1; setFloor(here); floor.instanceColor.needsUpdate = true; }
+  collectPickup(here);
+  if (virus.x === exit.x && virus.z === exit.z) escaped();
+}
+
+function updateVirus(dt) {
+  // Travel budget in cells; what's left at a cell centre carries on into the next move, so holding a key glides
+  const inAcid = acid[idx(virus.x, virus.z)] || (virus.moving && acid[idx(virus.tx, virus.tz)]);
+  if (inAcid && !acidWarned) { acidWarned = true; toast('🧪 Acid! You can only wade through it slowly', 2.2); }
+  let budget = VIRUS_SPEED * (power.atp > 0 ? ATP_SPEED : 1) * (inAcid ? ACID_SLOW : 1) * dt;
+  for (let guard = 0; guard < 3 && state === 'play'; guard++) {
+    if (!virus.moving) { if (!decide(dt)) return; continue; }
+    const dir = wantedDir();
+    if (dir && dir[0] === -virus.face[0] && dir[1] === -virus.face[1]) {
+      // Turn back at once instead of finishing the step
+      [virus.tx, virus.fx] = [virus.fx, virus.tx];
+      [virus.tz, virus.fz] = [virus.fz, virus.tz];
+      virus.face = dir;
+    }
+    const dx = virus.tx - virus.px, dz = virus.tz - virus.pz, d = Math.hypot(dx, dz);
+    if (d > budget) { virus.px += dx / d * budget; virus.pz += dz / d * budget; return; }
+    budget -= d;
+    arrive();
+  }
+}
+
+// At a cell centre: move, chew or bump. Returns true when a move started.
+function decide(dt) {
+  const dir = wantedDir();
+  if (!dir) { stopChewing(); return false; }
+  virus.face = dir;
+  const nx = virus.x + dir[0], nz = virus.z + dir[1];
+  if (!inside(nx, nz)) return false;
+  const c = idx(nx, nz);
+  if (virus.chewing !== c) stopChewing();
+  if (type[c] === OPEN) { startMove(nx, nz); return true; }
+  if (type[c] === WALL) {
+    if (bumpCooldown <= 0) { sfx.bump(); say('virus-bump'); bumpCooldown = 0.5; toast('Membrane: too tough to chew', 1.2); }
+    return false;
+  }
+  // Chew
+  virus.chewing = c;
+  chew[c] += dt / (CHEW_TIME[type[c]] * (power.enzyme > 0 ? ENZYME_CHEW : 1));
+  chompTimer -= dt;
+  if (chompTimer <= 0) { sfx.chomp(); spawnBits(nx - dir[0] * 0.45, nz - dir[1] * 0.45, 2); chompTimer = 0.2; }
+  if (chew[c] >= 1) {
+    type[c] = OPEN; eaten[c] = 1; eatenCount++;
+    virus.chewing = -1;
+    setTissue(c); setFloor(c);
+    tissue.instanceMatrix.needsUpdate = nuclei.instanceMatrix.needsUpdate = tissue.instanceColor.needsUpdate = floor.instanceColor.needsUpdate = true;
+    spawnBits(nx, nz, 6); sfx.gulp();
+    if (Math.random() < CHEW_TAUNT) say('virus-chew');
+    startMove(nx, nz);
+  } else {
+    setTissue(c, chew[c], Math.sin(elapsed * 40) * 0.06 * chew[c]);
+    tissue.instanceMatrix.needsUpdate = nuclei.instanceMatrix.needsUpdate = tissue.instanceColor.needsUpdate = true;
+  }
+  return false;
+}
+
+/* ======== update: antibodies ======== */
+function updateAntibodies(dt) {
+  const speed = AB_SPEED + AB_SPEED_PER_LEVEL * (level - 1);
+  const target = trackTarget();
+  let nearest = Infinity;
+  danger = 0;
+  // Slipping into hiding: a shimmer, a whisper, and the guards lose you
+  const hidden = isHidden();
+  if (hidden && !wasHidden) {
+    if (fat[idx(virus.x, virus.z)]) { sfx.cloak(); say('virus-hide'); }
+    if (antibodies.some(a => a.wasHunting)) say('guard-where');
+  }
+  wasHidden = hidden;
+  for (const a of antibodies) {
+    a.grow = Math.min(1, a.grow + dt * 2);
+    const here = idx(a.x, a.z);
+    const hunting = dist[here] >= 0;
+    const v = hunting ? speed : speed * AB_WANDER_FACTOR;
+    if (hunting && a.wasHunting === false && a.grow >= 1 && target === virus) say('guard-there');
+    a.wasHunting = hunting;
+    if (hunting && target === virus) danger = Math.max(danger, Math.min(1, (8 - dist[here]) / 5));
+
+    if (!a.moving) {
+      if (dist[here] === 0) {
+        // Same cell as the target: go straight for it
+        a.tx = target.px; a.tz = target.pz;
+      } else if (hunting) {
+        const opts = DIRS.map(([dx, dz]) => [a.x + dx, a.z + dz])
+          .filter(([x, z]) => inside(x, z) && dist[idx(x, z)] === dist[here] - 1);
+        const [x, z] = opts[randi(0, opts.length - 1)];
+        a.last = here; a.x = x; a.z = z; a.tx = x; a.tz = z; a.moving = true;
+      } else {
+        let opts = DIRS.map(([dx, dz]) => [a.x + dx, a.z + dz])
+          .filter(([x, z]) => inside(x, z) && type[idx(x, z)] === OPEN);
+        if (opts.length > 1) opts = opts.filter(([x, z]) => idx(x, z) !== a.last);
+        if (opts.length) {
+          const [x, z] = opts[randi(0, opts.length - 1)];
+          a.last = here; a.x = x; a.z = z; a.tx = x; a.tz = z; a.moving = true;
+        }
+      }
+    }
+    const dx = a.tx - a.px, dz = a.tz - a.pz, d = Math.hypot(dx, dz), step = v * dt;
+    const moved = Math.min(d, step);
+    if (d > 1e-4) { a.dx = dx; a.dz = dz; }
+    if (d <= step) { a.px = a.tx; a.pz = a.tz; a.moving = false; }
+    else { a.px += dx / d * step; a.pz += dz / d * step; }
+
+    const toVirus = Math.hypot(a.px - virus.px, a.pz - virus.pz);
+    nearest = Math.min(nearest, toVirus);
+    if (toVirus < CATCH_DIST && a.grow >= 1) return caught();
+    if (decoy && Math.hypot(a.px - decoy.px, a.pz - decoy.pz) < CATCH_DIST) { popDecoy(); sfx.pop(); say('guard-fake'); toast('Decoy popped!', 1.2); }
+
+    // Look
+    a.phase += dt;
+    a.mesh.position.set(a.px, 0, a.pz);
+    a.mesh.scale.setScalar(a.grow * 1.15);
+    animateAntibody(a, dt, moved, hunting);
+  }
+  $('danger').style.opacity = Math.max(0, Math.min(0.85, (3.5 - nearest) / 3)).toFixed(2);
+}
+
+function updateWaves(dt) {
+  waveTimer -= dt;
+  if (waveTimer > 0) return;
+  waveTimer = WAVE_EVERY;
+  firstWaveDone = true;
+  if (antibodies.length >= MAX_ANTIBODIES) return;
+  addAntibody(spawnCell.x, spawnCell.z);
+  sfx.spawn();
+  say('guard-halt');
+  toast('Antibodies on your trail!', 1.8);
+}
+
+/* ======== win / lose ======== */
+const CREDIT = '<p class="credit">Voices and sounds: elevenlabs.io · Music: Eleven Music</p>';
+function caught() {
+  state = 'caught';
+  sfx.caught();
+  hushVoices();
+  say('guard-gotcha', { force: true });
+  say('virus-caught');
+  setTimeout(() => { if (state !== 'play') musicMode = 'title'; }, 7000);
+  showCard(`<h1 class="bad">Caught!</h1>
+    <p>The antibodies tagged you after <b>${fmt(elapsed)}</b> and <b>${eatenCount}</b> cells chewed.</p>
+    <span class="key">Space: try again</span>${CREDIT}`);
+}
+function escaped() {
+  state = 'escaped';
+  sfx.escaped();
+  hushVoices();
+  say('virus-escape', { force: true });
+  setTimeout(() => { if (state !== 'play') musicMode = 'title'; }, 8000);
+  showCard(`<h1>Escaped!</h1>
+    <p>You slipped into the bloodstream in <b>${fmt(elapsed)}</b>, chewing <b>${eatenCount}</b> cells.</p>
+    <p>Next, level ${level + 1}: <b>${themeFor(level + 1).icon} ${themeFor(level + 1).name}</b>. ${themeFor(level + 1).blurb}</p>
+    <span class="key">Space: next level</span>${CREDIT}`);
+}
+
+/* ======== power-up timers ======== */
+function updatePowers(dt) {
+  for (const k in power) {
+    if (power[k] <= 0) continue;
+    power[k] -= dt;
+    if (power[k] <= 0) toast(`${POWERS[k].icon} wore off`, 1.2);
+  }
+  if (decoy && (decoy.t -= dt) <= 0) popDecoy();
+}
+
+let powerHudText = '';
+function updatePowerHud() {
+  const parts = Object.keys(power).filter(k => power[k] > 0).map(k => `${POWERS[k].icon} ${Math.ceil(power[k])}`);
+  if (decoy) parts.push(`${POWERS.decoy.icon} ${Math.ceil(decoy.t)}`);
+  if (fat[idx(virus.x, virus.z)]) parts.push('🧈 hidden');
+  const text = parts.join('  ');
+  if (text === powerHudText) return;
+  powerHudText = text;
+  $('hPower').textContent = text;
+  $('hPower').hidden = !text;
+}
+
+/* ======== camera and minimap ======== */
+const camTarget = new THREE.Vector3();
+function snapCamera() {
+  camTarget.set(virus.px, 0, virus.pz - 1.5);
+  camera.position.copy(camTarget).add(CAM_OFFSET);
+  camera.lookAt(camTarget);
+}
+function updateCamera(dt) {
+  const k = 1 - Math.exp(-dt * 5);
+  camTarget.lerp(_p.set(virus.px, 0, virus.pz - 1.5), k);
+  camera.position.copy(camTarget).add(CAM_OFFSET);
+  camera.lookAt(camTarget);
+  sun.position.set(virus.px + 6, 14, virus.pz + 4);
+  sun.target.position.set(virus.px, 0, virus.pz);
+}
+
+const mm = $('minimap').getContext('2d');
+const MM = 186 / GRID;
+const MM_COL = { [OPEN]: '#5a2030', [SOFT]: '#c9707f', [DENSE]: '#8a3a50', [WALL]: '#3a2c50', [FAT]: '#e8cf7a' };
+function drawMinimap() {
+  mm.clearRect(0, 0, 186, 186);
+  for (let i = 0; i < N; i++) {
+    mm.fillStyle = type[i] === OPEN ? (fat[i] ? '#9a8a40' : eaten[i] ? '#3d6a2c' : acid[i] ? '#7aff3a' : vessel[i] ? MM_COL.lane : MM_COL[OPEN]) : MM_COL[type[i]];
+    mm.fillRect((i % GRID) * MM, ((i / GRID) | 0) * MM, MM + 0.5, MM + 0.5);
+  }
+  const dot = (x, z, col, r) => { mm.fillStyle = col; mm.beginPath(); mm.arc((x + 0.5) * MM, (z + 0.5) * MM, r, 0, 7); mm.fill(); };
+  dot(exit.x, exit.z, (performance.now() / 300 | 0) % 2 ? '#fff' : '#ff5a6e', 4);
+  for (const [i, p] of pickupAt) dot(i % GRID, (i / GRID) | 0, '#' + POWERS[p.kind].color.toString(16).padStart(6, '0'), 2.5);
+  if (decoy) dot(decoy.px, decoy.pz, '#ffa040', 3);
+  for (const a of antibodies) dot(a.px, a.pz, '#8fc8ff', 3);
+  dot(virus.px, virus.pz, '#9cff5a', 3.5);
+}
+
+/* ======== main loop ======== */
+const clock = new THREE.Clock();
+let mmTimer = 0;
+function frame() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+  if (state === 'play') {
+    elapsed += dt;
+    bumpCooldown -= dt;
+    updatePowers(dt);
+    updateVirus(dt);
+    computeDist();
+    if (state === 'play') updateAntibodies(dt);
+    if (state === 'play') updateWaves(dt);
+    $('hTime').textContent = fmt(elapsed);
+    $('hEaten').textContent = eatenCount;
+    $('hAb').textContent = antibodies.length;
+    $('hWave').hidden = firstWaveDone;
+    if (!firstWaveDone) $('hWaveT').textContent = fmt(Math.ceil(waveTimer));
+    updatePowerHud();
+  }
+  if (toastTimer > 0 && (toastTimer -= dt) <= 0) $('toast').classList.remove('on');
+  updateBits(dt);
+
+  // Hidden virus fades out; pickups and decoy bob about
+  const fade = state === 'play' && isHidden() ? 0.35 : 1;
+  for (const m of virusMesh.userData.mats) m.opacity = lerp(m.opacity, fade, 1 - Math.exp(-dt * 8));
+  for (const p of pickupAt.values()) {
+    p.mesh.userData.gem.rotation.y += dt * 2;
+    p.mesh.position.y = 0.45 + Math.sin(t * 3 + p.mesh.position.x) * 0.08;
+  }
+  if (decoy) {
+    decoyMesh.position.set(decoy.px, 0.45 + Math.abs(Math.sin(t * 6)) * 0.15, decoy.pz);
+    decoyMesh.rotation.y = Math.sin(t * 4) * 0.6;
+    animateVirus(decoyMesh, t, false, true);
+  }
+
+  // Virus look: face where it's going (three-quarter view when heading away), grin at the camera when idle,
+  // lunge into tissue while chewing
+  const chewing = virus.chewing >= 0 && state === 'play';
+  const busy = chewing || virus.moving;
+  idleTime = busy ? 0 : idleTime + dt;
+  if (virus.face[0]) virus.side = virus.face[0];
+  const wantYaw = idleTime > 0.6 ? 0 : virus.face[1] < 0 ? Math.PI - 0.7 * virus.side : Math.atan2(virus.face[0], virus.face[1]);
+  virus.yaw = lerpAngle(virus.yaw, wantYaw, 1 - Math.exp(-dt * 12));
+  virus.lunge = lerp(virus.lunge, chewing ? 0.18 + Math.sin(t * 28) * 0.08 : 0, 1 - Math.exp(-dt * 15));
+  virusMesh.position.set(virus.px + virus.face[0] * virus.lunge, 0.5 + Math.sin(t * 3) * 0.05, virus.pz + virus.face[1] * virus.lunge);
+  virusMesh.rotation.set(chewing ? 0.25 : virus.moving ? 0.15 : 0, virus.yaw, 0);
+  const pulse = 1 + Math.sin(t * (chewing ? 20 : 4)) * (chewing ? 0.06 : 0.03);
+  virusMesh.scale.setScalar(pulse * VIRUS_SCALE);
+  animateVirus(virusMesh, t, chewing, virus.moving);
+
+  // Heartbeat: tissue swell, floor glow, a soft lub-dub while playing
+  const beat = heartbeat(t);
+  beatUniform.value = beat * theme.beat;
+  floorMat.emissiveIntensity = beat * 0.35 * Math.min(1.5, theme.beat);
+  const beatPhase = t % HEART_PERIOD;
+  if (state === 'play' && ac) {
+    if (beatPhase < lastBeatPhase) sfx.heartbeat();
+  }
+  lastBeatPhase = beatPhase;
+
+  exitRing.scale.setScalar(1 + Math.sin(t * 4) * 0.12);
+  exitLight.intensity = 5 + Math.sin(t * 4) * 2;
+  updateMotes(dt, t);
+  updateRbcs(dt, t);
+  updateOrganExtras(dt, t);
+  updateMusic(dt, state === 'play' ? danger : 0);
+
+  updateCamera(dt);
+  if ((mmTimer -= dt) <= 0) { drawMinimap(); mmTimer = 0.1; }
+  composer.render();
+  requestAnimationFrame(frame);
+}
+let idleTime = 0, lastBeatPhase = 0, danger = 0, wasHidden = false, acidWarned = false;
+
+// ?debug exposes the game state on window.ve for testing in the console
+if (new URLSearchParams(location.search).has('debug')) {
+  window.ve = { virus, antibodies, power, pickupAt, type, fat, dist, idx, collectPickup, get decoy() { return decoy; },
+    get state() { return state; }, get waveTimer() { return waveTimer; }, fastestEscape, isHidden, cam: CAM_OFFSET, setLevel: n => { level = n; newLevel(); begin(); },
+    get audio() { return { ctx: ac?.state, loaded: Object.keys(clips).length, of: CLIPS.length, musicMode, chase, playing: Object.keys(music) }; }, step: dt => { updatePowers(dt); updateVirus(dt); computeDist(); updateAntibodies(dt); } };
+}
+
+newLevel();
+showCard(`<h1>Virus Escape</h1>
+  <p>You're a virus inside the body. <b>Chew through tissue</b> to reach the glowing capillary and escape into the bloodstream.</p>
+  <p>Antibodies follow your tunnels, and more come in through your entry wound. Red vessels are fast lanes, but patrols lurk there. Purple membranes can't be chewed.</p>
+  <p>Hide in <b>yellow fat</b> and they lose your scent. Grab glowing gems: ⚡ super chewing, 💨 speed, 👻 cloak, 🎈 decoy.</p>
+  <p>Escape six organs: 💪 muscle, 🫁 lungs, 🍲 gut, 🧠 brain, 🦴 bone and ❤️ heart.</p>
+  <span class="key">Arrow keys / WASD to start</span>${CREDIT}`);
+frame();
+</script>
+</body>
+</html>

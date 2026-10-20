@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "virus-escape",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "5225"],
+      "port": 5225
+    }
+  ]
+}
