@@ -1,5 +1,7 @@
 # Virus Escape
 
+Play it at https://tb-x.github.io/virus-escape/ (desktop browser, keyboard).
+
 A 3D desktop browser game (proof of concept). You're a virus inside the body: chew
 through tissue to reach a glowing capillary and escape into the bloodstream, while
 antibodies hunt you through the tunnels you leave behind.
@@ -61,6 +63,11 @@ python -m http.server 5225
 ```
 
 then go to http://localhost:5225/.
+
+It also works offline once it has been opened online, and can be added to a Home Screen.
+(How: `manifest.webmanifest` gives the icon and full-screen mode; `sw.js`, a service worker,
+keeps a copy of every file the game uses. The icons `icon-180.png` and `icon-512.png` are
+rendered from `icon.svg` in headless Chrome.)
 
 ## Tuning knobs
 
