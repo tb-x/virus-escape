@@ -1,8 +1,8 @@
 # Virus Escape
 
-Play it at https://tb-x.github.io/virus-escape/ (desktop browser, keyboard).
+Play it at https://tb-x.github.io/virus-escape/ on a computer (keyboard) or a phone or tablet (touch).
 
-A 3D desktop browser game (proof of concept). You're a virus inside the body: chew
+A 3D browser game (proof of concept). You're a virus inside the body: chew
 through tissue to reach a glowing capillary and escape into the bloodstream, while
 antibodies hunt you through the tunnels you leave behind.
 
@@ -11,6 +11,10 @@ antibodies hunt you through the tunnels you leave behind.
 - Move with the arrow keys or WASD. Holding a key glides from cell to cell, a quick tap
   moves one cell (even if tapped a moment early), and pressing the opposite way turns
   back at once.
+- On a phone or tablet, put a finger down anywhere and drag the way you want to go: a
+  stick appears under your finger, and the virus keeps going (or chewing) while you hold.
+  A quick swipe moves one cell. The stick follows your finger if you drag far, so turning
+  back is a short flick. The mouse can drag the same way.
 - Hold a direction against tissue to chew it. Pink soft tissue goes quickly, dark dense
   tissue takes longer, purple membranes can't be chewed at all.
 - Yellow fat pockets are very quick to chew, and while you're inside one the antibodies
@@ -30,10 +34,12 @@ antibodies hunt you through the tunnels you leave behind.
   counts down to them. After that, more come every 12 seconds.
 - The tissue right round the entry wound is always soft, so the first few bites are easy.
 - Reach the glowing ring to win; the next level is a different organ, with more patrols
-  and faster antibodies. If one touches you, you're caught: press Space to try again.
+  and faster antibodies. If one touches you, you're caught: press Space (or tap the button)
+  to try again.
 - The minimap (bottom right) shows tissue, vessels, your green trail, the antibodies
   (blue) and the exit (blinking).
-- R restarts the level, M turns the sound on or off (remembered).
+- R or the ↻ button (top right) restarts the level; M or the 🔊 button turns the sound on
+  or off (remembered).
 
 ## The organs
 
@@ -56,13 +62,18 @@ opened.
 
 ## Running it
 
-Serve the folder and open it in a desktop browser:
+Serve the folder and open it in a browser:
 
 ```bash
 python -m http.server 5225
 ```
 
-then go to http://localhost:5225/.
+then go to http://localhost:5225/ (or `http://<laptop-ip>:5225/` from a phone on the same Wi-Fi).
+
+It fits phones and tablets in both orientations: the stats wrap and shrink, the minimap
+shrinks, the cards scroll if they don't fit, and on a tall narrow screen the camera pulls
+back so you still see a few cells either side. Touch devices render at a lower resolution
+with smaller shadows to stay smooth.
 
 It also works offline once it has been opened online, and can be added to a Home Screen.
 (How: `manifest.webmanifest` gives the icon and full-screen mode; `sw.js`, a service worker,
@@ -93,6 +104,9 @@ All at the top of the script in `index.html`:
 | `THEMES` | The organs: colours, cell shape, layout and extras for each |
 | `ENZYME_CHEW`, `ATP_SPEED` | Strength of the chewing and speed boosts (durations are in `POWERS`) |
 | `TAP_BUFFER` | How long a tapped direction is remembered before the virus reaches a cell centre |
+| `STICK_DEAD`, `STICK_RADIUS` | Touch stick: how far to drag before it picks a direction, and how far before it follows the finger |
+| `MIN_VIEW` | Cells always visible either side of the virus; narrow screens pull the camera back to keep them |
+| `TOUCH_PIXEL_RATIO` | Render resolution cap on touch devices |
 | `SFX_VOL`, `VOICE_VOL`, `MUSIC_VOL`, `HEART_VOL` | Loudness of effects, spoken lines, music and the heartbeat |
 | `MUSIC_DUCK` | How far the music dips while someone talks |
 | `VOICE_GAP`, `VOICE_GAP_LONG` | Seconds before the same kind of line can be said again (longer for chewing, bumping and power-up remarks) |
